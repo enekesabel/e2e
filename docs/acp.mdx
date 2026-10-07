@@ -10,8 +10,8 @@ already use, over the [Agent Client Protocol](https://agentclientprotocol.com)
 agent signs in the way it does on its own, with its CLI login or its own API
 key, so e2e needs no model provider of its own.
 
-The agent gets the same kind of tools the built-in agent has: the action
-verbs your target's engine supports, `observe`, and `complete_step`. Every
+The agent gets the built-in agent's own action tools for the verbs your
+target's engine supports, with its rules for them, plus `complete_step`. Every
 action goes through the runner, which authorizes, counts, and records it, so
 steps replay from the [cache](/cache) without the agent.
 
@@ -123,7 +123,14 @@ One agent session serves one test attempt. The first agent step that the
 cache cannot replay starts it, every later step of the test is one more
 message in the same conversation, and the session closes when the attempt
 ends. Each message carries the step, its non-secret params, the steps
-completed so far, and the current screen.
+completed so far, and the current screen. Action results report what
+changed on screen since, as they do for the built-in agent, and a
+`screenshot` reaches the agent as an image.
+
+The session lists its tools once. Two of them depend on the step:
+`type_secret` comes with a step that declares secrets, and `screenshot` goes
+once a secret was filled in the attempt. A step's message names the ones it
+does not offer, and a call of one says why.
 
 The tools reach the agent as an MCP server that the test worker serves on
 `127.0.0.1`, on an ephemeral port and a random path. The agent process
@@ -133,7 +140,7 @@ system or terminal access to it. When the agent asks permission for a tool, call
 tools are allowed and anything else is rejected.
 
 An assertion gets the same session and tools, but an action during an
-assertion is refused. The agent concludes it with `complete_step`, and a
+assertion is refused; `observe`, `screenshot`, and scrolling still work. The agent concludes it with `complete_step`, and a
 `failed` verdict fails the step with `ASSERTION_FAILED`.
 
 ## Secrets
@@ -158,4 +165,3 @@ itself, the same as for the built-in agent.
   the agent reports them; `maxSteps` and the step timeout bound the turn.
 - `waitFor` and `extract` still use the built-in judgments and need the
   agents entry's `model`.
-- No point, pixel, or keyboard-focus tools yet: the agent acts by node id.
