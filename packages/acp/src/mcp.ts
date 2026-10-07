@@ -16,13 +16,21 @@ import type { z } from 'zod';
 /** The MCP server name the agent sees. Distinct from `e2e mcp`'s `e2e`, so a permission request naming it is about these tools. */
 export const MCP_SERVER_NAME = 'e2e_step';
 
-/** One tool the agent can call: a closed input schema and a handler that answers in text. */
+/** What a tool answers: text, with a screenshot once the step shows pixels. */
+export interface ToolResult {
+  readonly text: string;
+  /** A base64 image. */
+  readonly image?: { readonly data: string; readonly mimeType: string };
+  readonly isError?: boolean;
+}
+
+/** One tool the agent can call: a closed input schema and its handler. */
 export interface ServedTool {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: z.ZodObject;
   readonly readOnly: boolean;
-  run(args: Record<string, unknown>): Promise<{ readonly text: string; readonly isError?: boolean }>;
+  run(args: Record<string, unknown>): Promise<ToolResult>;
 }
 
 /** A running tool server. */
@@ -48,7 +56,10 @@ export async function serveTools(tools: readonly ServedTool[]): Promise<ToolServ
           async (args: Record<string, unknown>) => {
             const result = await tool.run(args);
             return {
-              content: [{ type: 'text' as const, text: result.text }],
+              content: [
+                { type: 'text' as const, text: result.text },
+                ...(result.image === undefined ? [] : [{ type: 'image' as const, ...result.image }]),
+              ],
               ...(result.isError === true ? { isError: true } : {}),
             };
           },

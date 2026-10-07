@@ -14,7 +14,7 @@ import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, type McpServer } f
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 type Move =
-  /** `on` picks the id: the first line of the latest screen that contains it. */
+  /** `on` picks the target id: the newest screen line that contains it. */
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
   | { readonly own: string; readonly kind: string }
   | { readonly say: string }
@@ -31,7 +31,7 @@ const log = (entry: unknown) => {
 log({ pid: process.pid });
 
 let mcp: Client | undefined;
-/** The latest screen text the agent read: the prompt's, then each tool result's. */
+/** The screen lines the agent read this turn, newest first: each tool result's changes, then the prompt's screen. */
 let screen = '';
 let turn = 0;
 let cancelRequested = false;
@@ -114,9 +114,9 @@ const connection = new AgentSideConnection(
           return { stopReason: 'cancelled' };
         } else {
           const id = move.on === undefined ? undefined : idOf(move.on);
-          const result = await mcp!.callTool({ name: move.call, arguments: { ...move.args, ...(id === undefined ? {} : { id }) } });
+          const result = await mcp!.callTool({ name: move.call, arguments: { ...move.args, ...(id === undefined ? {} : { target: id }) } });
           const content = (result.content as { type: string; text?: string }[] | undefined) ?? [];
-          if (result.isError !== true) screen = content.map((part) => part.text ?? '').join('\n');
+          if (result.isError !== true) screen = `${content.map((part) => part.text ?? '').join('\n')}\n${screen}`;
           log({ call: move.call, result });
         }
       }
