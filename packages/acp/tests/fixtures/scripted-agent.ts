@@ -1,0 +1,137 @@
+/**
+ * A scripted ACP agent on stdio, for tests. `ACP_SCRIPT` is a JSON array
+ * with one entry per prompt turn, or an object keyed by text the prompt
+ * contains, each a list of moves: call one of the
+ * client's MCP tools, ask permission for a tool of the agent's own, or say
+ * something. Every prompt and tool result is appended to `ACP_LOG` as JSON
+ * lines, with the tool list the session saw. With `ACP_HANG_INIT` set, the
+ * agent never answers `initialize`.
+ */
+
+import { appendFileSync } from 'node:fs';
+import { Readable, Writable } from 'node:stream';
+import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, type McpServer } from '@agentclientprotocol/sdk';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+
+type Move =
+  /** `on` picks the id: the first line of the latest screen that contains it. */
+  | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
+  | { readonly own: string; readonly kind: string }
+  | { readonly say: string }
+  | { readonly hang: true };
+
+/** Moves per turn in order, or per step: the moves of the first key the prompt contains. */
+const script = JSON.parse(process.env['ACP_SCRIPT'] ?? '[]') as Move[][] | Record<string, Move[]>;
+const movesFor = (prompt: string, index: number): Move[] =>
+  Array.isArray(script) ? (script[index] ?? []) : (Object.entries(script).find(([key]) => prompt.includes(key))?.[1] ?? []);
+const log = (entry: unknown) => {
+  if (process.env['ACP_LOG'] !== undefined) appendFileSync(process.env['ACP_LOG'], `${JSON.stringify(entry)}\n`);
+};
+
+log({ pid: process.pid });
+
+let mcp: Client | undefined;
+/** The latest screen text the agent read: the prompt's, then each tool result's. */
+let screen = '';
+let turn = 0;
+let cancelRequested = false;
+let cancelled: (() => void) | undefined;
+
+const connection = new AgentSideConnection(
+  (client) => ({
+    initialize: () =>
+      process.env['ACP_HANG_INIT'] === undefined
+        ? {
+            protocolVersion: PROTOCOL_VERSION,
+            agentCapabilities: { mcpCapabilities: { http: true }, sessionCapabilities: { close: {} } },
+            agentInfo: { name: 'scripted-agent', version: '1' },
+            authMethods: [],
+          }
+        : new Promise<never>(() => undefined),
+    newSession: async (params) => {
+      const server = params.mcpServers[0] as Extract<McpServer, { type: 'http' }>;
+      mcp = new Client({ name: 'scripted-agent', version: '1' });
+      await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+      const { tools } = await mcp.listTools();
+      log({ session: { cwd: params.cwd, server: server.name, meta: params._meta ?? null, tools: tools.map((tool) => tool.name) } });
+      return {
+        sessionId: 's1',
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'fast',
+            options: [
+              { value: 'fast', name: 'Fast' },
+              { value: 'slow', name: 'Slow' },
+            ],
+          },
+        ],
+      };
+    },
+    setSessionConfigOption: (params) => {
+      log({ config: { [params.configId]: params.value } });
+      return { configOptions: [] };
+    },
+    authenticate: () => ({}),
+    closeSession: () => {
+      log({ closed: true });
+      return {};
+    },
+    cancel: () => {
+      log({ cancelled: true });
+      cancelRequested = true;
+      cancelled?.();
+    },
+    prompt: async (params) => {
+      const text = params.prompt.map((block) => (block.type === 'text' ? block.text : '')).join('\n');
+      log({ prompt: text });
+      screen = text;
+      cancelRequested = false;
+      for (const move of movesFor(text, turn++)) {
+        if ('say' in move) {
+          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: move.say } } });
+        } else if ('own' in move) {
+          const toolCall = { toolCallId: `own-${turn}`, title: move.own, kind: move.kind as 'execute' };
+          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', ...toolCall } });
+          const answer = await client.requestPermission({
+            sessionId: 's1',
+            toolCall,
+            options: [
+              { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
+              { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+            ],
+          });
+          log({ permission: move.own, outcome: answer.outcome });
+        } else if ('hang' in move) {
+          if (!cancelRequested) {
+            await new Promise<void>((resolve) => {
+              cancelled = resolve;
+            });
+          }
+          return { stopReason: 'cancelled' };
+        } else {
+          const id = move.on === undefined ? undefined : idOf(move.on);
+          const result = await mcp!.callTool({ name: move.call, arguments: { ...move.args, ...(id === undefined ? {} : { id }) } });
+          const content = (result.content as { type: string; text?: string }[] | undefined) ?? [];
+          if (result.isError !== true) screen = content.map((part) => part.text ?? '').join('\n');
+          log({ call: move.call, result });
+        }
+      }
+      await client.sessionUpdate({
+        sessionId: 's1',
+        update: { sessionUpdate: 'usage_update', used: 100, size: 1000, cost: { amount: 0.01 * turn, currency: 'USD' } },
+      });
+      return { stopReason: 'end_turn', usage: { totalTokens: 15, inputTokens: 10, outputTokens: 5, cachedReadTokens: 4 } };
+    },
+  }),
+  ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>),
+);
+void connection;
+
+function idOf(on: string): string | undefined {
+  const line = screen.split('\n').find((entry) => entry.includes(on));
+  return line?.match(/#(\S+)/)?.[1];
+}
