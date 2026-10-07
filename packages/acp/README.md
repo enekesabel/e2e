@@ -21,9 +21,9 @@ export default {
 } satisfies E2EConfig;
 ```
 
-One agent session serves one test attempt. The agent gets the action verbs
-the target's engine supports, `observe`, and `complete_step`, as an MCP
-server the test worker serves on 127.0.0.1. Every action goes through the
+One agent session serves one test attempt. The agent gets the built-in
+agent's action tools for the verbs the target's engine supports, and
+`complete_step`, as an MCP server the test worker serves on 127.0.0.1. Every action goes through the
 runner, so steps replay from the cache without the agent. Permission
 requests for anything but those tools are rejected.
 

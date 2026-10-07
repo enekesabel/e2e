@@ -52,13 +52,16 @@ function context(options: { kind?: 'act' | 'assert'; attempt?: ReturnType<typeof
     ledger: '',
     agentContext: undefined,
     actions: { tap, type } as unknown as ExecutorActions,
-    observe: vi.fn<StepExecutorContext['observe']>().mockResolvedValue({
+    observe: vi.fn<StepExecutorContext['observe']>().mockImplementation(async (request) => ({
       revision: '1',
       text: '#n1 textbox "Title"\n#n2 button "Add"',
       truncated: false,
       viewport: { width: 800, height: 600 },
       path: '/todos',
-    }),
+      ...(request?.pixels === true
+        ? { pixels: { data: new Uint8Array([137, 80, 78, 71]), mediaType: 'image/png' as const, width: 800, height: 600, scale: 1, maskedRegionCount: 0 } }
+        : {}),
+    })),
     pixelsTainted: false,
     attachTranscript: (text: string) => void transcripts.push(text),
     attachTurns: () => undefined,
@@ -89,7 +92,7 @@ describe('acpExecutor', () => {
   });
 
   it('acts through ctx.actions and passes on complete_step', async () => {
-    const { executor, log } = scripted([[{ call: 'type', args: { id: 'n1', value: 'Buy milk' } }, { call: 'tap', args: { id: '#n2' } }, pass]], { model: 'slow' });
+    const { executor, log } = scripted([[{ call: 'type', args: { target: 'n1', value: 'Buy milk' } }, { call: 'tap', args: { target: 'n2' } }, pass]], { model: 'slow' });
     const step = context();
     cleanups.push(step.end);
     const verdict = await executor.runStep(step.ctx);
@@ -103,11 +106,11 @@ describe('acpExecutor', () => {
     expect(entries).toContainEqual({ config: { model: 'slow' } });
     const session = entries.find((entry) => 'session' in entry)?.['session'] as { server: string; tools: string[] };
     expect(session.server).toBe('e2e_step');
-    // Only the target's verbs, plus observe and complete_step.
-    expect(session.tools.toSorted()).toEqual(['complete_step', 'navigate', 'observe', 'tap', 'type']);
-    const tapResult = JSON.stringify(entries.find((entry) => entry['call'] === 'tap'));
-    expect(tapResult).toContain('tap done');
-    expect(tapResult).toContain('button \\"Add\\"');
+    // The built-in agent's tools for the target's verbs, plus complete_step.
+    expect(session.tools.toSorted()).toEqual(['complete_step', 'navigate', 'observe', 'screenshot', 'tap', 'tap_at', 'type', 'type_at']);
+    expect(JSON.stringify(entries.find((entry) => entry['call'] === 'tap'))).toContain('Tapped #n2.');
+    // The step's first screen is whole, in the message.
+    expect(String(entries.find((entry) => 'prompt' in entry)?.['prompt'])).toContain('#n2 button "Add"');
   });
 
   it('keeps one session per attempt and sends the rules only once', async () => {
@@ -128,7 +131,7 @@ describe('acpExecutor', () => {
   });
 
   it('refuses actions on an assertion and fails it with ASSERTION_FAILED', async () => {
-    const { executor, log } = scripted([[{ call: 'tap', args: { id: 'n2' } }, { call: 'complete_step', args: { status: 'failed', summary: 'no todo' } }]]);
+    const { executor, log } = scripted([[{ call: 'tap', args: { target: 'n2' } }, { call: 'complete_step', args: { status: 'failed', summary: 'no todo' } }]]);
     const step = context({ kind: 'assert' });
     cleanups.push(step.end);
     const verdict = await executor.runStep(step.ctx);
@@ -157,7 +160,7 @@ describe('acpExecutor', () => {
   });
 
   it('rethrows a runtime error a tool hit, after cancelling the turn', async () => {
-    const { executor, log } = scripted([[{ call: 'tap', args: { id: 'n2' } }, { hang: true }]]);
+    const { executor, log } = scripted([[{ call: 'tap', args: { target: 'n2' } }, { hang: true }]]);
     const step = context();
     cleanups.push(step.end);
     step.tap.mockRejectedValue(new AgentError('STEP_BUDGET_EXHAUSTED', 'the step used its 25 actions'));
@@ -173,6 +176,21 @@ describe('acpExecutor', () => {
       code: 'MODEL_PROVIDER_FAILED',
       message: expect.stringContaining('does not offer model huge; it offers fast, slow'),
     });
+  });
+
+  it('lists the tools once and tells the agent which ones a step does not offer', async () => {
+    const { executor, log } = scripted([[{ call: 'screenshot' }, { call: 'type_secret', args: { target: 'n1', name: 'admin.password' } }, pass]]);
+    const step = context({ verbs: ['tap', 'typeSecret'] });
+    cleanups.push(step.end);
+    await executor.runStep(step.ctx);
+    const entries = log();
+    const session = entries.find((entry) => 'session' in entry)?.['session'] as { tools: string[] };
+    expect(session.tools).toContain('type_secret');
+    expect(String(entries.find((entry) => 'prompt' in entry)?.['prompt'])).toContain('Not offered in this step: type_secret (this step declares no secrets).');
+    expect(JSON.stringify(entries.find((entry) => entry['call'] === 'type_secret'))).toContain('this step declares no secrets');
+    // A screenshot reaches the agent as an MCP image.
+    const shot = entries.find((entry) => entry['call'] === 'screenshot')?.['result'] as { content: { type: string; mimeType?: string }[] };
+    expect(shot.content).toContainEqual(expect.objectContaining({ type: 'image', mimeType: 'image/png' }));
   });
 
   it('launches the agent from the project directory and opens the session in an empty one', async () => {

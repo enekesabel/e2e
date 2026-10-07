@@ -317,7 +317,8 @@ make no model calls.
   `defineTool(tool({ ... }), { mutates: true })` from `e2e/agent` for a
   test API a flow calls mid-step.
 - `createToolLoopExecutor` keeps the loop and replaces prompt and tool
-  vocabulary.
+  vocabulary; spread `createGrammarTools(ctx, { guard })` into its tools and
+  start its `system` with `BASE_RULES` to keep the built-in actions.
 - Any `StepExecutor` (`{ name, version?, cache?, runStep(ctx) }`) goes under
   `executor`; the runner still owns observations, actions, budgets, and the
   report, and `system` or `tools` beside `executor` is `INVALID_CONFIG`.

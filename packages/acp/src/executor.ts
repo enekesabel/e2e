@@ -1,21 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import { AgentError, type JsonValue, type StepExecutor, type StepExecutorContext, type StepVerdict } from 'e2e';
+import { BASE_RULES } from 'e2e/agent';
 import { ConfigurationError } from 'e2e/engine';
 import { startSession, type AcpSession, type TurnReport } from './session.ts';
-import { screen, stepTools, type ActiveStep, type StepSlot } from './tools.ts';
+import { missingTools, openingScreen, stepTools, type ActiveStep, type StepSlot } from './tools.ts';
+import type { ServedTool } from './mcp.ts';
 import type { AcpExecutorOptions } from './types.ts';
 
-const RULES = `You are an end-to-end testing agent driving a real application for a test.
-Each message from the test is one step: an action to perform, or an assertion to judge, with the current screen.
-The screen is a tree of nodes, one per line, each with an id like "n42" that the action tools take. Never invent ids.
+/** What the session is, before the built-in agent's rules for the same tools. */
+const SESSION_RULES = `This conversation drives a real application for an end-to-end test, one step per message: an action to perform, or an assertion to judge, with the current screen.
 Use only the tools of this conversation. You have no access to the application's source, files, shell, or network.
-Work only toward the given step; do not start the next one. Every action tool returns the screen after it, so you do not need to observe after an action.
-For an assertion, judge the condition from the screen without acting.
-End every step with complete_step: "passed" only when the screen shows the outcome the step asked for (or the condition holds), else "failed" with the reason.`;
+The rules below are for each step. A step ends when you call complete_step; then wait for the next message. For an assertion, judge the condition from the screen without changing anything.`;
+
+const RULES = `${SESSION_RULES}\n\n${BASE_RULES}`;
 
 interface Held {
   readonly session: Promise<AcpSession>;
   readonly slot: StepSlot;
+  /** The tools the session lists, fixed for the attempt. */
+  readonly tools: readonly ServedTool[];
   introduced: boolean;
 }
 
@@ -46,9 +49,9 @@ export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
         ctx.attempt.memory.delete(memoryKey);
         throw new AgentError('MODEL_PROVIDER_FAILED', `The ACP agent did not start: ${message(error)}`, { cause: error });
       }
-      const text = await stepMessage(ctx, held.introduced ? undefined : [RULES, options.system, ctx.agentContext]);
-      held.introduced = true;
       const active: ActiveStep = { ctx, verdict: undefined, halted: undefined, calls: [] };
+      const text = await stepMessage(active, held.tools, held.introduced ? undefined : [RULES, options.system, ctx.agentContext]);
+      held.introduced = true;
       held.slot.active = active;
       const cancel = () => session.cancel();
       ctx.signal.addEventListener('abort', cancel, { once: true });
@@ -95,10 +98,12 @@ function hold(ctx: StepExecutorContext, options: AcpExecutorOptions, memoryKey: 
   let session: AcpSession | undefined;
   let closed = false;
   const slot: StepSlot = { active: undefined, halt: () => session?.cancel() };
+  const tools = stepTools(slot, ctx);
   const held: Held = {
     slot,
+    tools,
     introduced: false,
-    session: startSession(options, stepTools(slot, ctx.target.verbs), ctx.attempt.signal).then((started) => {
+    session: startSession(options, tools, ctx.attempt.signal).then((started) => {
       session = started;
       if (closed) started.close();
       return started;
@@ -118,7 +123,8 @@ function hold(ctx: StepExecutorContext, options: AcpExecutorOptions, memoryKey: 
 }
 
 /** The message for one step: the rules on the first, then the step, what already ran, and the screen. */
-async function stepMessage(ctx: StepExecutorContext, introduction: (string | undefined)[] | undefined): Promise<string> {
+async function stepMessage(active: ActiveStep, tools: readonly ServedTool[], introduction: (string | undefined)[] | undefined): Promise<string> {
+  const { ctx } = active;
   const parts: string[] = [];
   if (introduction !== undefined) parts.push(...introduction.filter((part): part is string => part !== undefined && part.trim() !== ''));
   const { step } = ctx;
@@ -128,6 +134,8 @@ async function stepMessage(ctx: StepExecutorContext, introduction: (string | und
   if (step.secrets.length > 0) {
     parts.push(`Secrets to fill with type_secret, by name: ${step.secrets.map((secret) => `${secret.name} (${secret.purpose})`).join(', ')}`);
   }
+  const missing = missingTools(active, tools);
+  if (missing.length > 0) parts.push(`Not offered in this step: ${missing.join(', ')}.`);
   if (ctx.ledger !== '') parts.push(`Steps completed so far in this test, including any replayed without you:\n${ctx.ledger}`);
   const prefix = ctx.replayedPrefix;
   if (prefix !== undefined) {
@@ -138,7 +146,7 @@ async function stepMessage(ctx: StepExecutorContext, introduction: (string | und
       parts.push(`This replayed action may have taken effect although it failed: ${prefix.uncertainAction}. Check the screen before doing anything like it again.`);
     }
   }
-  parts.push(await screen(ctx));
+  parts.push(await openingScreen(active));
   return parts.join('\n\n');
 }
 

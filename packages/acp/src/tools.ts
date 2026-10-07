@@ -1,18 +1,34 @@
 /**
- * The tools a session offers: the engine's action grammar, `observe`, and
- * `complete_step`. They are built once per session and act on whichever
- * step is active when the agent calls them, so one conversation serves every
- * step of a test. Every action goes through `ctx.actions`, where the runner
- * authorizes, counts, and records it, so steps replay from the cache as the
- * built-in agent's do.
+ * The tools a session offers: the built-in agent's action tools
+ * (`createGrammarTools` from `e2e/agent`) and `complete_step`. An ACP session
+ * lists its tools once, while e2e builds the action tools per step, so the
+ * session lists them from its first step and each call runs the active
+ * step's own tool of that name. Every action goes through `ctx.actions`,
+ * where the runner authorizes, counts, and records it, so steps replay from
+ * the cache as the built-in agent's do.
  */
 
-import { isAgentError, type ExecutorVerb, type StepExecutorContext, type StepVerdict } from 'e2e';
+import { isAgentError, type StepExecutorContext, type StepVerdict } from 'e2e';
+import { createGrammarTools } from 'e2e/agent';
 import { z } from 'zod';
-import type { ServedTool } from './mcp.ts';
+import type { ServedTool, ToolResult } from './mcp.ts';
 
 /** Error codes the runtime owns: they end the step and are rethrown untouched, never shown to the agent as an action failure. */
 const RUNTIME_CODES = new Set(['STEP_BUDGET_EXHAUSTED', 'STEP_TIMEOUT', 'CANCELLED']);
+
+/** Tools that change nothing in the app, so an assertion may use them. */
+const READ_ONLY = new Set(['observe', 'screenshot', 'scroll', 'scroll_to']);
+
+/** One action tool as `createGrammarTools` builds it: an AI SDK tool. */
+interface GrammarTool {
+  readonly description?: string;
+  readonly inputSchema: unknown;
+  readonly execute?: (input: unknown, options: { toolCallId: string; messages: [] }) => unknown;
+}
+type GrammarTools = Readonly<Record<string, GrammarTool>>;
+
+/** A rendered screen, as the action tools return it: text, or text with the screenshot. */
+type ScreenOutput = string | { readonly text: string; readonly pixels: { readonly data: Uint8Array; readonly mediaType: string } };
 
 /** The step a session serves now. */
 export interface ActiveStep {
@@ -22,6 +38,8 @@ export interface ActiveStep {
   halted: unknown;
   /** Tool names in call order, for the transcript. */
   readonly calls: string[];
+  /** The step's own action tools, built on its first look. */
+  tools?: GrammarTools;
 }
 
 /** Where the tools find the active step, and how a tool ends the turn early. */
@@ -31,95 +49,33 @@ export interface StepSlot {
   halt(): void;
 }
 
-const id = z.string().describe('node id from the latest screen, e.g. n42');
-const direction = z.enum(['up', 'down', 'left', 'right']);
-const target = (value: unknown) => ({ id: String(value).replace(/^#/, '') });
-
-/** One action tool: the verb it needs, its input, and the call into `ctx.actions`. */
-interface ActionSpec {
-  readonly name: string;
-  readonly verb: ExecutorVerb;
-  readonly description: string;
-  readonly input: z.ZodObject;
-  readonly act: (ctx: StepExecutorContext, args: Record<string, unknown>) => Promise<unknown>;
+/** The active step's action tools, built once per step so its screens report changes against the one before. */
+function toolsOf(active: ActiveStep): GrammarTools {
+  active.tools ??= createGrammarTools(active.ctx) as GrammarTools;
+  return active.tools;
 }
 
-const ACTIONS: readonly ActionSpec[] = [
-  { name: 'tap', verb: 'tap', description: 'Tap (click) a node.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.tap(target(a['id'])) },
-  { name: 'double_tap', verb: 'doubleTap', description: 'Double-tap a node.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.doubleTap(target(a['id'])) },
-  { name: 'long_press', verb: 'longPress', description: 'Press and hold a node.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.longPress(target(a['id'])) },
-  { name: 'secondary_tap', verb: 'secondaryTap', description: 'Right-click a node.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.secondaryTap(target(a['id'])) },
-  { name: 'hover', verb: 'hover', description: 'Move the pointer over a node without pressing.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.hover(target(a['id'])) },
-  {
-    name: 'type',
-    verb: 'type',
-    description: 'Replace the text of a field.',
-    input: z.object({ id, value: z.string() }).strict(),
-    act: (ctx, a) => ctx.actions.type(target(a['id']), String(a['value'])),
-  },
-  {
-    name: 'type_secret',
-    verb: 'typeSecret',
-    description: 'Fill a secret the step declares into a field, by the secret\'s name. You never see the value.',
-    input: z.object({ id, name: z.string() }).strict(),
-    act: (ctx, a) => ctx.actions.typeSecret(target(a['id']), String(a['name'])),
-  },
-  {
-    name: 'press',
-    verb: 'press',
-    description: 'Press a key on a node, e.g. Enter.',
-    input: z.object({ id, key: z.string() }).strict(),
-    act: (ctx, a) => ctx.actions.press(target(a['id']), String(a['key'])),
-  },
-  {
-    name: 'select',
-    verb: 'select',
-    description: 'Choose an option of a select by its label.',
-    input: z.object({ id, value: z.string() }).strict(),
-    act: (ctx, a) => ctx.actions.select(target(a['id']), String(a['value'])),
-  },
-  {
-    name: 'check',
-    verb: 'check',
-    description: 'Set a checkbox, switch, or radio to checked or unchecked. Leaves it alone when it is already in that state.',
-    input: z.object({ id, checked: z.boolean() }).strict(),
-    act: (ctx, a) => ctx.actions.check(target(a['id']), a['checked'] === true),
-  },
-  {
-    name: 'drag',
-    verb: 'drag',
-    description: 'Drag one node onto another.',
-    input: z.object({ source: id, destination: id }).strict(),
-    act: (ctx, a) => ctx.actions.drag(target(a['source']), target(a['destination'])),
-  },
-  { name: 'scroll_to', verb: 'scrollTo', description: 'Bring a listed node into view.', input: z.object({ id }).strict(), act: (ctx, a) => ctx.actions.scrollTo(target(a['id'])) },
-  {
-    name: 'scroll_until',
-    verb: 'scrollUntil',
-    description: 'Scroll the page, or a list by id, until a node reading `text` is in view: for a row the screen does not list yet.',
-    input: z.object({ text: z.string(), direction, list: id.optional() }).strict(),
-    act: (ctx, a) =>
-      ctx.actions.scrollUntil(String(a['text']), a['direction'] as 'down', a['list'] === undefined ? undefined : target(a['list'])),
-  },
-  {
-    name: 'scroll',
-    verb: 'scroll',
-    description: 'Scroll the page, or a list by id, one screen.',
-    input: z.object({ direction, id: id.optional() }).strict(),
-    act: (ctx, a) => ctx.actions.scroll(a['direction'] as 'down', a['id'] === undefined ? undefined : target(a['id'])),
-  },
-  {
-    name: 'navigate',
-    verb: 'navigate',
-    description: 'Open an http(s) URL or a path of the app.',
-    input: z.object({ url: z.string() }).strict(),
-    act: (ctx, a) => ctx.actions.navigate(String(a['url'])),
-  },
-  { name: 'back', verb: 'back', description: 'Go back one page.', input: z.object({}).strict(), act: (ctx) => ctx.actions.back() },
-];
+/** Runs one action tool of the step and returns its rendered screen. */
+async function run(tools: GrammarTools, name: string, input: unknown): Promise<ScreenOutput> {
+  const tool = tools[name];
+  if (tool?.execute === undefined) throw new Error(unavailable(name));
+  return (await tool.execute(input, { toolCallId: name, messages: [] })) as ScreenOutput;
+}
 
-/** The session's tools, for the verbs the target's engine supports. */
-export function stepTools(slot: StepSlot, verbs: ReadonlySet<ExecutorVerb>): ServedTool[] {
+/** The step's first screen, whole: the first look of its action tools, which later results report changes against. */
+export async function openingScreen(active: ActiveStep): Promise<string> {
+  const output = await run(toolsOf(active), 'observe', {});
+  return (typeof output === 'string' ? output : output.text).replace(/^Observed\.\s*/, '');
+}
+
+/** The listed tools the active step does not offer, by the reason it would give. */
+export function missingTools(active: ActiveStep, listed: readonly ServedTool[]): string[] {
+  const own = toolsOf(active);
+  return listed.filter((tool) => tool.name !== 'complete_step' && own[tool.name] === undefined).map((tool) => `${tool.name} (${unavailable(tool.name)})`);
+}
+
+/** The session's tools, listed from its first step. */
+export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedTool[] {
   const current = (name: string): ActiveStep => {
     const active = slot.active;
     if (active === undefined || active.verdict !== undefined || active.halted !== undefined) {
@@ -129,46 +85,35 @@ export function stepTools(slot: StepSlot, verbs: ReadonlySet<ExecutorVerb>): Ser
     return active;
   };
   /** Runs a tool body against the active step; a runtime error ends the turn, anything else goes back to the agent as the call's error. */
-  const guarded =
-    (name: string, body: (active: ActiveStep) => Promise<string>) =>
-    async (): Promise<{ text: string; isError?: boolean }> => {
-      let active: ActiveStep | undefined;
-      try {
-        active = current(name);
-        return { text: await body(active) };
-      } catch (error) {
-        if (active !== undefined && isAgentError(error) && RUNTIME_CODES.has(error.code)) {
-          active.halted = error;
-          slot.halt();
-          return { text: `The step has ended (${error.code}). Stop and wait for the next instruction.`, isError: true };
-        }
-        return { text: `${name} failed: ${firstLine(error)}`, isError: true };
+  const guarded = async (name: string, body: (active: ActiveStep) => Promise<ToolResult>): Promise<ToolResult> => {
+    let active: ActiveStep | undefined;
+    try {
+      active = current(name);
+      return await body(active);
+    } catch (error) {
+      if (active !== undefined && isAgentError(error) && RUNTIME_CODES.has(error.code)) {
+        active.halted = error;
+        slot.halt();
+        return { text: `The step has ended (${error.code}). Stop and wait for the next instruction.`, isError: true };
       }
-    };
-  const tools: ServedTool[] = [
-    {
-      name: 'observe',
-      description: 'Read the current screen.',
-      inputSchema: z.object({}).strict(),
-      readOnly: true,
-      run: guarded('observe', async ({ ctx }) => screen(ctx)),
-    },
-  ];
-  for (const spec of ACTIONS) {
-    if (!verbs.has(spec.verb)) continue;
+      return { text: `${name} failed: ${firstLine(error)}`, isError: true };
+    }
+  };
+  const tools: ServedTool[] = [];
+  for (const [name, tool] of Object.entries(listing(first))) {
+    const readOnly = READ_ONLY.has(name);
     tools.push({
-      name: spec.name,
-      description: spec.description,
-      inputSchema: spec.input,
-      readOnly: false,
+      name,
+      description: name === 'type_secret' ? TYPE_SECRET : (tool.description ?? name),
+      inputSchema: tool.inputSchema as z.ZodObject,
+      readOnly,
       run: (args) =>
-        guarded(spec.name, async ({ ctx }) => {
-          if (ctx.step.kind === 'assert') {
+        guarded(name, async (active) => {
+          if (!readOnly && active.ctx.step.kind === 'assert') {
             throw new Error('this step is an assertion: read the screen and conclude, do not act');
           }
-          await spec.act(ctx, args);
-          return `${spec.name} done.\n\n${await screen(ctx)}`;
-        })(),
+          return result(await run(toolsOf(active), name, args));
+        }),
     });
   }
   tools.push({
@@ -184,18 +129,40 @@ export function stepTools(slot: StepSlot, verbs: ReadonlySet<ExecutorVerb>): Ser
           args['status'] === 'passed'
             ? { status: 'passed', summary }
             : { status: 'failed', summary, errorCode: active.ctx.step.kind === 'assert' ? 'ASSERTION_FAILED' : 'ACTION_FAILED' };
-        return 'Step recorded. Wait for the next instruction.';
-      })(),
+        return { text: 'Step recorded. Wait for the next instruction.' };
+      }),
   });
   return tools;
 }
 
-/** The current screen as the agent reads it. */
-export async function screen(ctx: StepExecutorContext): Promise<string> {
-  const observation = await ctx.observe();
-  const location = observation.path === undefined ? '' : `Location: ${observation.path}\n`;
-  const truncated = observation.truncated ? '\n(The screen was cut to fit; scroll to read more.)' : '';
-  return `Current screen:\n${location}${observation.text}${truncated}`;
+/** Listed in place of the grammar's own description, which names one step's secrets. */
+const TYPE_SECRET =
+  'Fill one declared secret into an input by its name; the plaintext never passes through you. A password fills only a password field; a generic-secret fills any editable input. The step message lists the secrets it declares.';
+
+/**
+ * Every action tool any step of the attempt can get: the first step's, with
+ * the two that come and go per step added. `type_secret` is built only for a
+ * step that declares secrets, and `screenshot` goes once a secret was filled;
+ * a call of either where the active step has none says why.
+ */
+function listing(first: StepExecutorContext): GrammarTools {
+  const widest = Object.create(first, {
+    pixelsTainted: { value: false },
+    step: { value: { ...first.step, secrets: [{ name: 'secret', purpose: 'password' }] } },
+  }) as StepExecutorContext;
+  return createGrammarTools(widest) as GrammarTools;
+}
+
+function unavailable(name: string): string {
+  if (name === 'type_secret') return 'this step declares no secrets';
+  if (name === 'screenshot') return 'a secret was filled in this attempt, so no screenshots leave the runner until it ends (PIXEL_TAINTED)';
+  return `${name} is not available in this step`;
+}
+
+/** A rendered screen as an MCP result: its text, and the screenshot as an image when it carries one. */
+function result(output: ScreenOutput): ToolResult {
+  if (typeof output === 'string') return { text: output };
+  return { text: output.text, image: { data: Buffer.from(output.pixels.data).toString('base64'), mimeType: output.pixels.mediaType } };
 }
 
 function firstLine(error: unknown): string {
