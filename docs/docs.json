@@ -92,7 +92,8 @@
             "pages": [
               "models",
               "decision-models",
-              "subscriptions"
+              "subscriptions",
+              "acp"
             ]
           },
           {
