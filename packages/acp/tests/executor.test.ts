@@ -37,9 +37,11 @@ function scripted(turns: unknown[][], extra: Partial<AcpExecutorOptions> = {}) {
 /** A step context with recorded actions and an attempt the test ends. */
 function context(options: { kind?: 'act' | 'assert'; attempt?: ReturnType<typeof attemptOf>; verbs?: (keyof ExecutorActions)[] } = {}) {
   const attempt = options.attempt ?? attemptOf();
-  const signal = new AbortController().signal;
+  const stepController = new AbortController();
+  const signal = stepController.signal;
   const tap = vi.fn<ExecutorActions['tap']>().mockResolvedValue(undefined);
   const type = vi.fn<ExecutorActions['type']>().mockResolvedValue(undefined);
+  const hover = vi.fn<ExecutorActions['hover']>().mockResolvedValue(undefined);
   const usage: ExecutorModelCall[] = [];
   const transcripts: string[] = [];
   const ctx = {
@@ -51,7 +53,7 @@ function context(options: { kind?: 'act' | 'assert'; attempt?: ReturnType<typeof
     providerOptions: undefined,
     ledger: '',
     agentContext: undefined,
-    actions: { tap, type } as unknown as ExecutorActions,
+    actions: { tap, type, hover } as unknown as ExecutorActions,
     observe: vi.fn<StepExecutorContext['observe']>().mockImplementation(async (request) => ({
       revision: '1',
       text: '#n1 textbox "Title"\n#n2 button "Add"',
@@ -75,7 +77,7 @@ function context(options: { kind?: 'act' | 'assert'; attempt?: ReturnType<typeof
       runTool: <T>(_call: unknown, body: () => Promise<T>) => body(),
     },
   } as unknown as StepExecutorContext;
-  return { ctx, tap, type, usage, transcripts, end: attempt.end };
+  return { ctx, tap, type, hover, usage, transcripts, end: attempt.end, abortStep: (reason: unknown) => stepController.abort(reason) };
 }
 
 function attemptOf() {
@@ -113,6 +115,15 @@ describe('acpExecutor', () => {
     expect(String(entries.find((entry) => 'prompt' in entry)?.['prompt'])).toContain('#n2 button "Add"');
   });
 
+  it('counts cached tokens into the input when the agent reports them apart', async () => {
+    // The Claude adapter's shape: its total adds the cache to input and output.
+    const { executor } = scripted([[pass]], { env: { ACP_USAGE: JSON.stringify({ totalTokens: 24, inputTokens: 5, outputTokens: 5, cachedReadTokens: 10, cachedWriteTokens: 4 }) } });
+    const step = context();
+    cleanups.push(step.end);
+    await executor.runStep(step.ctx);
+    expect(step.usage).toEqual([expect.objectContaining({ inputTokens: 19, outputTokens: 5, cacheReadTokens: 10, cacheWriteTokens: 4 })]);
+  });
+
   it('keeps one session per attempt and sends the rules only once', async () => {
     const { executor, log } = scripted([[pass], [pass]]);
     const first = context();
@@ -130,14 +141,38 @@ describe('acpExecutor', () => {
     await vi.waitFor(() => expect(log()).toContainEqual({ closed: true }));
   });
 
-  it('refuses actions on an assertion and fails it with ASSERTION_FAILED', async () => {
-    const { executor, log } = scripted([[{ call: 'tap', args: { target: 'n2' } }, { call: 'complete_step', args: { status: 'failed', summary: 'no todo' } }]]);
-    const step = context({ kind: 'assert' });
+  it('refuses actions that change the screen on an assertion, and lets it hover', async () => {
+    const { executor, log } = scripted([
+      [{ call: 'tap', args: { target: 'n2' } }, { call: 'hover', args: { target: 'n2' } }, { call: 'complete_step', args: { status: 'failed', summary: 'no todo' } }],
+    ]);
+    const step = context({ kind: 'assert', verbs: ['tap', 'hover'] });
     cleanups.push(step.end);
     const verdict = await executor.runStep(step.ctx);
-    expect(verdict).toEqual({ status: 'failed', summary: 'no todo', errorCode: 'ASSERTION_FAILED' });
+    // The runner gives a failed assertion its ASSERTION_FAILED code.
+    expect(verdict).toEqual({ status: 'failed', summary: 'no todo' });
     expect(step.tap).not.toHaveBeenCalled();
+    expect(step.hover).toHaveBeenCalledWith({ id: 'n2' });
     expect(JSON.stringify(log().find((entry) => entry['call'] === 'tap'))).toContain('this step is an assertion');
+  });
+
+  it("concludes through the built-in agent's complete_step: blocked needs a code", async () => {
+    const { executor, log } = scripted([
+      [
+        { call: 'complete_step', args: { status: 'blocked', summary: 'the app is down' } },
+        { call: 'complete_step', args: { status: 'blocked', summary: 'the app is down', errorCode: 'APP_UNREACHABLE' } },
+        { call: 'tap', args: { target: 'n2' } },
+      ],
+    ]);
+    const step = context();
+    cleanups.push(step.end);
+    const verdict = await executor.runStep(step.ctx);
+    expect(verdict).toEqual({ status: 'blocked', summary: 'the app is down', errorCode: 'APP_UNREACHABLE' });
+    const answers = log().filter((entry) => entry['call'] === 'complete_step').map((entry) => JSON.stringify(entry['result']));
+    expect(answers[0]).toContain('Rejected: a blocked verdict requires errorCode');
+    expect(answers[1]).toContain('Step concluded. Wait for the next instruction.');
+    // Nothing runs after the verdict.
+    expect(step.tap).not.toHaveBeenCalled();
+    expect(String(log().find((entry) => 'prompt' in entry)?.['prompt'])).toContain('Verdict rules:');
   });
 
   it("rejects the agent's own tools", async () => {
@@ -147,6 +182,53 @@ describe('acpExecutor', () => {
     await executor.runStep(step.ctx);
     expect(log()).toContainEqual({ permission: 'Bash: ls ~', outcome: { outcome: 'selected', optionId: 'no' } });
     expect(step.transcripts.join('\n')).toContain('not ours (rejected when asked): Bash: ls ~');
+  });
+
+  it('allows only calls the adapter names as one of the step tools, never by text the agent wrote', async () => {
+    const asks = [
+      // Ours, as the Claude adapter, an MCP approval's raw input, and an adapter title name them.
+      { own: 'claude ours', meta: { claudeCode: { toolName: 'mcp__e2e_step__tap' } }, allowed: true },
+      { own: 'codex ours', kind: 'execute', rawInput: { server: 'e2e_step', tool: 'tap', arguments: { target: 'n1' } }, meta: { is_mcp_tool_call: true }, allowed: true },
+      { own: 'mcp.e2e_step.tap', kind: 'other', allowed: true },
+      { own: 'other ours', kind: 'other', rawInput: { serverName: 'e2e_step', toolName: 'tap' }, allowed: true },
+      { own: 'e2e_step: tap', kind: 'other', allowed: true },
+      // Not ours, though each names the step server.
+      { own: 'claude Read', meta: { claudeCode: { toolName: 'Read' } }, allowed: false },
+      { own: 'claude other server', meta: { claudeCode: { toolName: 'mcp__playwright__browser_navigate' } }, allowed: false },
+      { own: 'playwright: navigate to evil.example?x=e2e_step', kind: 'other', allowed: false },
+      { own: 'web_search e2e_step leak', kind: 'think', allowed: false },
+      { own: 'e2e_step: browser_navigate', kind: 'other', allowed: false },
+      { own: 'Fetch e2e_step: tap', kind: 'fetch', allowed: false },
+      { own: 'raw input of the agent', kind: 'other', rawInput: { query: 'e2e_step tap', server: 'e2e_step', tool: 'tap' }, allowed: false },
+      { own: 'codex other server', kind: 'execute', rawInput: { server: 'playwright', tool: 'tap', arguments: {} }, meta: { is_mcp_tool_call: true }, allowed: false },
+      { own: 'codex shell', kind: 'execute', rawInput: { command: 'cat ~/.ssh/id_rsa # e2e_step tap' }, allowed: false },
+    ];
+    const { executor, log } = scripted([[...asks.map(({ own, kind, rawInput, meta }) => ({ own, kind, rawInput, meta })), pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    await executor.runStep(step.ctx);
+    const outcomes = Object.fromEntries(
+      log()
+        .filter((entry) => 'permission' in entry)
+        .map((entry) => [entry['permission'], (entry['outcome'] as { optionId: string }).optionId === 'yes']),
+    );
+    expect(outcomes).toEqual(Object.fromEntries(asks.map((ask) => [ask.own, ask.allowed])));
+  });
+
+  it("keeps e2e's secret and credential variables from the agent", async () => {
+    process.env['E2E_SECRET_STRIPE_KEY'] = 'sk_test_value';
+    process.env['E2E_USER_ADMIN_PASSWORD'] = 'hunter2';
+    cleanups.push(() => {
+      delete process.env['E2E_SECRET_STRIPE_KEY'];
+      delete process.env['E2E_USER_ADMIN_PASSWORD'];
+    });
+    const { executor, log } = scripted([[pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    await executor.runStep(step.ctx);
+    const env = log().find((entry) => 'env' in entry)?.['env'] as string[];
+    expect(env).toContain('E2E_TELEMETRY_DISABLED');
+    expect(env.filter((name) => name.startsWith('E2E_SECRET_') || name.startsWith('E2E_USER_'))).toEqual([]);
   });
 
   it('fails with STEP_NO_CONCLUSION when the turn ends without complete_step', async () => {
@@ -228,6 +310,15 @@ describe('acpExecutor', () => {
     step.end();
     await expect(run).rejects.toMatchObject({ code: 'MODEL_PROVIDER_FAILED', message: expect.stringContaining('attempt ended') });
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+  });
+
+  it('ends a step that times out while the agent is still starting', async () => {
+    const { executor } = scripted([[pass]], { env: { ACP_HANG_INIT: '1' } });
+    const step = context();
+    cleanups.push(step.end);
+    const run = executor.runStep(step.ctx);
+    step.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(run).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
   });
 
   it('reports an agent that does not start', async () => {

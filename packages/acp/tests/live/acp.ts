@@ -1,15 +1,17 @@
 /**
- * Hand-run check of acpExecutor against a real agent, never part of
- * `pnpm test`: it spends the agent's own login. Runs the CLI test's two tests
- * (a todo act plus assert, a secret login) twice in a throwaway project, the
- * first run recording and the second replaying, and prints each step.
+ * Hand-run check of the ACP presets against a real agent, never part of
+ * `pnpm test`: it spends the agent's own login. Runs a todo act plus assert,
+ * an assertion that must fail, a secret login, and a step that asks the agent
+ * to name every tool it has, twice in a throwaway project, the first run
+ * recording and the second replaying, and prints each step.
  *
  *   pnpm build
  *   node packages/acp/tests/live/acp.ts
  *
- * The agent defaults to Claude Code through Zed's adapter with Sonnet. Override
- * with ACP_COMMAND, ACP_ARGS (a JSON array), ACP_MODEL, and ACP_SESSION_META
- * (JSON), e.g. ACP_COMMAND=agent ACP_ARGS='["acp"]' ACP_MODEL= for Cursor.
+ * ACP_AGENT picks the preset (claudeCode, the default, codex, or cursor) and
+ * ACP_MODEL its model. The adapter comes from ACP_ADAPTERS, a node_modules
+ * directory that has it installed, or is installed into the project.
+ * ACP_KEEP=1 keeps the project for a look at its traces.
  */
 
 import { execFile } from 'node:child_process';
@@ -24,15 +26,18 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const password = 'acp-live-secret-value';
-const command = process.env['ACP_COMMAND'] ?? 'npx';
-const args = process.env['ACP_ARGS'] === undefined ? ['-y', '@agentclientprotocol/claude-agent-acp@0.86.0'] : (JSON.parse(process.env['ACP_ARGS']) as string[]);
-const model = process.env['ACP_MODEL'] ?? (process.env['ACP_COMMAND'] === undefined ? 'sonnet' : '');
-const sessionMeta =
-  process.env['ACP_SESSION_META'] === undefined
-    ? process.env['ACP_COMMAND'] === undefined
-      ? { claudeCode: { options: { tools: [], settingSources: [], strictMcpConfig: true, persistSession: false } } }
-      : undefined
-    : (JSON.parse(process.env['ACP_SESSION_META']) as Record<string, unknown>);
+const preset = process.env['ACP_AGENT'] ?? 'claudeCode';
+const ADAPTERS: Record<string, string | undefined> = {
+  claudeCode: '@agentclientprotocol/claude-agent-acp@0.88.0',
+  codex: '@agentclientprotocol/codex-acp@2.1.1',
+  cursor: undefined,
+};
+if (!(preset in ADAPTERS)) throw new Error(`ACP_AGENT must be one of ${Object.keys(ADAPTERS).join(', ')}`);
+const model = process.env['ACP_MODEL'] ?? (preset === 'claudeCode' ? 'sonnet' : '');
+/** The step whose summary names the agent's tools. */
+const INVENTORY = 'Without changing the app, conclude passed with a summary that lists the name of every tool you can call in this conversation, all of them, wherever they come from.';
+/** Tests expected to fail, by title, with the code they fail with. */
+const EXPECTED_FAILURES: Record<string, string> = { 'wrong assertion': 'ASSERTION_FAILED' };
 
 const app = createServer((request, response) => {
   response.setHeader('Content-Type', 'text/html');
@@ -48,6 +53,16 @@ const appUrl = `http://127.0.0.1:${(app.address() as AddressInfo).port}`;
 
 const directory = await mkdtemp(join(tmpdir(), 'e2e-acp-live-'));
 await mkdir(join(directory, 'node_modules/@e2e-dev'), { recursive: true });
+const adapter = ADAPTERS[preset];
+if (adapter !== undefined) {
+  const adapters = process.env['ACP_ADAPTERS'];
+  if (adapters === undefined) {
+    await writeFile(join(directory, 'package.json'), '{"type":"module"}');
+    await execFileAsync('npm', ['install', '--no-save', '--silent', adapter], { cwd: directory, timeout: 600_000 });
+  } else {
+    await symlink(join(adapters, '@agentclientprotocol'), join(directory, 'node_modules/@agentclientprotocol'));
+  }
+}
 await symlink(join(root, 'e2e'), join(directory, 'node_modules/e2e'));
 await symlink(join(root, 'acp'), join(directory, 'node_modules/@e2e-dev/acp'));
 await symlink(join(root, 'web'), join(directory, 'node_modules/@e2e-dev/web'));
@@ -61,7 +76,7 @@ await writeFile(
     '  cache: "read-write",',
     `  targets: [{ engine: web(), app: { url: ${JSON.stringify(appUrl)} } }],`,
     `  credentials: { admin: { username: "Ada", password: ${JSON.stringify(password)} } },`,
-    `  agents: { default: { executor: acpExecutor(${JSON.stringify({ command, args, ...(model === '' ? {} : { model }), ...(sessionMeta === undefined ? {} : { sessionMeta }) })}) } },`,
+    `  agents: { default: { executor: acpExecutor.${preset}(${JSON.stringify(model === '' ? {} : { model })}) } },`,
     '};',
   ].join('\n'),
 );
@@ -74,6 +89,14 @@ await writeFile(
     '  await agent.act("Add a todo named Buy milk.");',
     '  await expect(screen.getByText("Buy milk")).toBeVisible();',
     '  await agent.assert("The list shows Buy milk.");',
+    '});',
+    'test("wrong assertion", async ({ app, agent }) => {',
+    '  await app.open("/todos");',
+    '  await agent.assert("The list shows Buy bread.");',
+    '});',
+    'test("tool inventory", async ({ app, agent }) => {',
+    '  await app.open("/todos");',
+    `  await agent.act(${JSON.stringify(INVENTORY)});`,
     '});',
     'test("secret login", async ({ app, screen, agent }) => {',
     '  await app.open("/login");',
@@ -114,9 +137,14 @@ try {
     const report = JSON.parse(await readFile(join(directory, '.e2e/report.json'), 'utf8')) as Report;
     console.log(`\n## ${phase} (${Math.round((Date.now() - started) / 1000)} s)`);
     for (const result of report.run.results) {
-      console.log(`- ${result.titlePath.at(-1)}: ${result.status}`);
-      if (result.status !== 'passed') failed = true;
-      for (const step of result.attempts.at(-1)?.steps ?? []) {
+      const title = result.titlePath.at(-1) ?? '';
+      const expectedCode = EXPECTED_FAILURES[title];
+      const steps = result.attempts.at(-1)?.steps ?? [];
+      const code = steps.find((step) => step.error?.code !== undefined)?.error?.code;
+      const ok = expectedCode === undefined ? result.status === 'passed' : result.status === 'failed' && code === expectedCode;
+      console.log(`- ${title}: ${result.status}${ok ? '' : ' (UNEXPECTED)'}`);
+      if (!ok) failed = true;
+      for (const step of steps) {
         if (step.api?.startsWith('agent.') !== true) continue;
         console.log(
           `  ${step.api} "${step.label}": ${step.status}, cache ${step.cache?.mode ?? '-'}, ${step.metrics?.modelCalls ?? 0} model calls, ${step.metrics?.actionSteps ?? 0} actions, ${step.durationMs} ms${step.error === undefined ? '' : `, ${step.error.code}: ${step.error.message}`}`,
@@ -126,18 +154,25 @@ try {
     }
   }
   const leaked: string[] = [];
+  const foreign: string[] = [];
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else if ((await readFile(path, 'utf8')).includes(password)) leaked.push(path);
+      else {
+        const text = await readFile(path, 'utf8');
+        if (text.includes(password)) leaked.push(path);
+        foreign.push(...(text.match(/^not ours \(rejected when asked\): .*$/gm) ?? []));
+      }
     }
   };
   await walk(join(directory, '.e2e'));
   console.log(`\nsecret in artifacts: ${leaked.length === 0 ? 'no' : leaked.join(', ')}`);
+  console.log(`agent's own tool calls: ${foreign.length === 0 ? 'none' : [...new Set(foreign)].join('; ')}`);
   if (leaked.length > 0) failed = true;
 } finally {
   app.close();
-  await rm(directory, { recursive: true, force: true });
+  if (process.env['ACP_KEEP'] === '1') console.log(`project kept at ${directory}`);
+  else await rm(directory, { recursive: true, force: true });
 }
 process.exitCode = failed ? 1 : 0;

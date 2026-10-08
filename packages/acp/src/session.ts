@@ -29,10 +29,27 @@ import {
   type Usage,
 } from '@agentclientprotocol/sdk';
 import { MCP_SERVER_NAME, serveTools, type ServedTool, type ToolServer } from './mcp.ts';
-import type { AcpExecutorOptions } from './types.ts';
 
 /** Tool kinds an agent uses for its own built-in tools; never a call of ours, whatever the title says. */
 const BUILT_IN_KINDS = new Set(['read', 'edit', 'delete', 'move', 'search', 'execute', 'fetch', 'switch_mode']);
+
+/** ACP's error code for a request the agent refuses until the user signs in. */
+const AUTH_REQUIRED = -32000;
+
+/** Variables e2e reads secret and credential values from: the agent never needs them. */
+const SECRET_VARIABLE = /^E2E_(?:SECRET|USER)_/;
+
+/** How to start one agent and what its session gets. */
+export interface AgentLaunch {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>> | undefined;
+  readonly model?: string | undefined;
+  readonly mode?: string | undefined;
+  readonly sessionMeta?: Readonly<Record<string, unknown>> | undefined;
+  /** How the user signs the agent in, for a session it refuses until they do. */
+  readonly signIn?: string | undefined;
+}
 
 /** What one prompt turn reported. */
 export interface TurnReport {
@@ -64,13 +81,13 @@ export interface AcpSession {
  * Aborting `signal` before the session is open stops the agent and the tool
  * server and rejects.
  */
-export async function startSession(options: AcpExecutorOptions, tools: readonly ServedTool[], signal: AbortSignal): Promise<AcpSession> {
+export async function startSession(launch: AgentLaunch, tools: readonly ServedTool[], signal: AbortSignal): Promise<AcpSession> {
   signal.throwIfAborted();
   const cwd = mkdtempSync(join(tmpdir(), 'e2e-acp-'));
   let server: ToolServer | undefined;
-  const child = spawn(options.command, [...(options.args ?? [])], {
+  const child = spawn(launch.command, [...launch.args], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, ...options.env },
+    env: { ...inheritedEnv(), ...launch.env },
   });
   let stderr = '';
   child.stderr.on('data', (data: Buffer) => {
@@ -79,7 +96,7 @@ export async function startSession(options: AcpExecutorOptions, tools: readonly 
   // A dead agent must not take the test worker down with a pipe error.
   child.stdin.on('error', () => undefined);
   const exited = new Promise<never>((_, reject) => {
-    child.on('error', (error) => reject(new Error(`could not start ${options.command}: ${error.message}`)));
+    child.on('error', (error) => reject(new Error(`could not start ${launch.command}: ${error.message}`)));
     child.on('exit', (code, exitSignal) =>
       reject(new Error(`the agent exited (${exitSignal ?? `code ${code}`})${stderr === '' ? '' : `: ${lastLine(stderr)}`}`)),
     );
@@ -94,11 +111,12 @@ export async function startSession(options: AcpExecutorOptions, tools: readonly 
   /** Ends a startup step early when the agent exits or the attempt ends. */
   const startup = <T>(step: Promise<T>): Promise<T> => Promise.race([exited, aborted, step]);
 
+  const ours = new Set(tools.map((tool) => tool.name));
   const calls = new Map<string, Partial<ToolCallUpdate>>();
   const turn = { cost: undefined as number | undefined, text: '', foreign: new Map<string, string>() };
   const client: Client = {
-    requestPermission: (params) => answerPermission(params, calls, turn.foreign),
-    sessionUpdate: (params) => observe(params, calls, turn),
+    requestPermission: (params) => answerPermission(params, ours, calls, turn.foreign),
+    sessionUpdate: (params) => observe(params, ours, calls, turn),
   };
   const connection = new ClientSideConnection(
     () => client,
@@ -127,32 +145,37 @@ export async function startSession(options: AcpExecutorOptions, tools: readonly 
       }),
     );
     if (initialize.agentCapabilities?.mcpCapabilities?.http !== true) {
-      throw new Error(`${options.command} does not accept MCP servers over HTTP`);
+      throw new Error(`${launch.command} does not accept MCP servers over HTTP`);
     }
     const session = await startup(
       connection.newSession({
         cwd,
         mcpServers: [{ type: 'http', name: MCP_SERVER_NAME, url: server.url, headers: [] }],
-        ...(options.sessionMeta === undefined ? {} : { _meta: { ...options.sessionMeta } }),
+        ...(launch.sessionMeta === undefined ? {} : { _meta: { ...launch.sessionMeta } }),
       }),
     );
     sessionId = session.sessionId;
     const modelOption = session.configOptions?.find((option) => option.category === 'model' || option.id === 'model');
-    if (options.model !== undefined) {
+    if (launch.model !== undefined) {
       const offered = modelOption === undefined ? [] : selectValues(modelOption);
-      if (modelOption === undefined || !offered.includes(options.model)) {
+      if (modelOption === undefined || !offered.includes(launch.model)) {
         throw new Error(
-          `the agent does not offer model ${options.model}${offered.length === 0 ? '' : `; it offers ${offered.join(', ')}`}`,
+          `the agent does not offer model ${launch.model}${offered.length === 0 ? '' : `; it offers ${offered.join(', ')}`}`,
         );
       }
-      await startup(connection.setSessionConfigOption({ sessionId, configId: modelOption.id, value: options.model }));
-      modelId = options.model;
+      await startup(connection.setSessionConfigOption({ sessionId, configId: modelOption.id, value: launch.model }));
+      modelId = launch.model;
     } else if (modelOption?.type === 'select') {
       modelId = String(modelOption.currentValue);
     }
-    if (options.mode !== undefined) await startup(selectMode(connection, session, options.mode));
+    if (launch.mode !== undefined) await startup(selectMode(connection, session, launch.mode));
   } catch (error) {
     teardown();
+    if (isAuthRequired(error)) {
+      throw new Error(`the agent is not signed in${launch.signIn === undefined ? '' : `: ${launch.signIn}`}`, { cause: error });
+    }
+    const details = detailsOf(error);
+    if (details !== undefined) throw new Error(`${error instanceof Error ? error.message : String(error)}: ${details}`, { cause: error });
     throw error;
   } finally {
     if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
@@ -198,6 +221,22 @@ export async function startSession(options: AcpExecutorOptions, tools: readonly 
   };
 }
 
+/** This process's environment without the variables e2e reads secrets from. */
+function inheritedEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_VARIABLE.test(name)));
+}
+
+/** What an agent said about a refused request beyond its message, e.g. the Claude adapter's `data.details`. */
+function detailsOf(error: unknown): string | undefined {
+  const data = typeof error === 'object' && error !== null ? (error as { data?: unknown }).data : undefined;
+  const details = typeof data === 'object' && data !== null ? (data as { details?: unknown }).details : data;
+  return typeof details === 'string' && details !== '' ? details : undefined;
+}
+
+function isAuthRequired(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === AUTH_REQUIRED;
+}
+
 async function selectMode(
   connection: ClientSideConnection,
   session: Awaited<ReturnType<ClientSideConnection['newSession']>>,
@@ -221,6 +260,7 @@ function selectValues(option: SessionConfigOption): string[] {
 
 function observe(
   { update }: SessionNotification,
+  ours: ReadonlySet<string>,
   calls: Map<string, Partial<ToolCallUpdate>>,
   turn: { cost: number | undefined; text: string; foreign: Map<string, string> },
 ): void {
@@ -229,7 +269,7 @@ function observe(
     case 'tool_call_update': {
       const { sessionUpdate: _, ...fields } = update;
       calls.set(update.toolCallId, { ...calls.get(update.toolCallId), ...defined(fields) });
-      if (update.sessionUpdate === 'tool_call' && !isOurs(update, undefined)) turn.foreign.set(update.toolCallId, update.title ?? update.kind ?? 'tool');
+      if (update.sessionUpdate === 'tool_call' && !isOurs(update, undefined, ours)) turn.foreign.set(update.toolCallId, update.title ?? update.kind ?? 'tool');
       break;
     }
     case 'agent_message_chunk':
@@ -246,11 +286,12 @@ function observe(
 /** Allows calls of the step tools; rejects everything else. */
 function answerPermission(
   params: RequestPermissionRequest,
+  ours: ReadonlySet<string>,
   calls: Map<string, Partial<ToolCallUpdate>>,
   foreign: Map<string, string>,
 ): RequestPermissionResponse {
   const toolCall = { ...calls.get(params.toolCall.toolCallId), ...defined(params.toolCall) };
-  const allowed = isOurs(toolCall, params['_meta'] ?? undefined);
+  const allowed = isOurs(toolCall, params['_meta'] ?? undefined, ours);
   if (!allowed) foreign.set(params.toolCall.toolCallId, toolCall.title ?? toolCall.kind ?? 'tool');
   const kinds = allowed ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always'];
   const option = kinds.map((kind) => params.options.find((entry) => entry.kind === kind)).find((entry) => entry !== undefined);
@@ -259,23 +300,47 @@ function answerPermission(
 
 /**
  * Whether a tool call is one of ours. ACP has no standard field for the MCP
- * server behind a call, so this reads what the adapters report: the Claude
- * adapter's `_meta.claudeCode`, the Codex adapter's MCP approval marker and
- * raw input, and otherwise a call that is not a built-in kind and names our
- * server in its title or input.
+ * server behind a call, so this reads what the adapters fill in, never text
+ * the agent wrote: the Claude adapter's `_meta.claudeCode.toolName`; the
+ * server and tool of a call the Codex adapter marks as an MCP call; and
+ * otherwise, for a call of no built-in kind, a raw input that is just a
+ * server, a tool, and its arguments, or a title that is exactly our server
+ * and one of our tool names. Anything else is not ours.
  */
-function isOurs(toolCall: Partial<ToolCallUpdate>, requestMeta: Record<string, unknown> | undefined): boolean {
-  const meta = (toolCall['_meta'] ?? {}) as { claudeCode?: { toolName?: unknown } };
+function isOurs(toolCall: Partial<ToolCallUpdate>, requestMeta: Record<string, unknown> | undefined, ours: ReadonlySet<string>): boolean {
+  const meta = (toolCall['_meta'] ?? {}) as { claudeCode?: { toolName?: unknown }; is_mcp_tool_call?: unknown };
   if (meta.claudeCode !== undefined) {
-    return typeof meta.claudeCode.toolName === 'string' && meta.claudeCode.toolName.startsWith(`mcp__${MCP_SERVER_NAME}__`);
+    const name = meta.claudeCode.toolName;
+    const prefix = `mcp__${MCP_SERVER_NAME}__`;
+    return typeof name === 'string' && name.startsWith(prefix) && ours.has(name.slice(prefix.length));
   }
-  const raw = (toolCall.rawInput ?? {}) as { serverName?: unknown; server?: unknown };
-  if (requestMeta?.['is_mcp_tool_approval'] === true) return raw.serverName === MCP_SERVER_NAME || raw.server === MCP_SERVER_NAME;
+  if (meta.is_mcp_tool_call === true || requestMeta?.['is_mcp_tool_approval'] === true) return mcpCallOf(toolCall.rawInput, ours);
   if (toolCall.kind != null && BUILT_IN_KINDS.has(toolCall.kind)) return false;
-  return [toolCall.title, JSON.stringify(toolCall.rawInput ?? null)].some(
-    (field) => typeof field === 'string' && field.includes(MCP_SERVER_NAME),
-  );
+  if (mcpCallOf(toolCall.rawInput, ours)) return true;
+  const title = toolCall.title?.trim();
+  if (title === undefined) return false;
+  const named = TITLE_FORMS.map((form) => form.exec(title)?.[1]).find((name) => name !== undefined);
+  return named !== undefined && ours.has(named);
 }
+
+/** Whether a raw input is an MCP call of one of our tools: our server, the tool's name, and its arguments, nothing else. */
+function mcpCallOf(rawInput: unknown, ours: ReadonlySet<string>): boolean {
+  if (typeof rawInput !== 'object' || rawInput === null || Array.isArray(rawInput)) return false;
+  const fields = rawInput as Record<string, unknown>;
+  if (!Object.keys(fields).every((key) => MCP_CALL_FIELDS.has(key))) return false;
+  const server = fields['server'] ?? fields['serverName'] ?? fields['server_name'];
+  const tool = fields['tool'] ?? fields['toolName'] ?? fields['tool_name'];
+  return server === MCP_SERVER_NAME && typeof tool === 'string' && ours.has(tool);
+}
+
+/** The fields of an MCP call's raw input as adapters report it. */
+const MCP_CALL_FIELDS = new Set(['server', 'serverName', 'server_name', 'tool', 'toolName', 'tool_name', 'arguments', 'args', 'input']);
+
+/** Titles an adapter gives an MCP tool call, each naming the server and the tool and nothing else. */
+const TITLE_FORMS = [
+  new RegExp(`^(?:mcp__|mcp\\.)?${MCP_SERVER_NAME}(?:__|\\.|/|: ?)(\\w+)$`),
+  new RegExp(`^(\\w+) \\(${MCP_SERVER_NAME}(?: MCP server)?\\)$`),
+];
 
 function defined<T extends object>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined && field !== null)) as Partial<T>;

@@ -4,19 +4,20 @@
  * contains, each a list of moves: call one of the
  * client's MCP tools, ask permission for a tool of the agent's own, or say
  * something. Every prompt and tool result is appended to `ACP_LOG` as JSON
- * lines, with the tool list the session saw. With `ACP_HANG_INIT` set, the
- * agent never answers `initialize`.
+ * lines, with the tool list the session saw, and the `E2E_` variables and
+ * `CODEX_CONFIG` it started with. `ACP_USAGE` is the usage each turn reports. With `ACP_HANG_INIT` set, the agent never
+ * answers `initialize`.
  */
 
 import { appendFileSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
-import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, type McpServer } from '@agentclientprotocol/sdk';
+import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, type McpServer, type Usage } from '@agentclientprotocol/sdk';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 type Move =
   /** `on` picks the target id: the newest screen line that contains it. */
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
-  | { readonly own: string; readonly kind: string }
+  | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
   | { readonly say: string }
   | { readonly hang: true };
 
@@ -29,6 +30,7 @@ const log = (entry: unknown) => {
 };
 
 log({ pid: process.pid });
+log({ env: Object.keys(process.env).filter((name) => name.startsWith('E2E_')).toSorted(), codexConfig: process.env['CODEX_CONFIG'] ?? null });
 
 let mcp: Client | undefined;
 /** The screen lines the agent read this turn, newest first: each tool result's changes, then the prompt's screen. */
@@ -69,7 +71,18 @@ const connection = new AgentSideConnection(
             ],
           },
         ],
+        modes: {
+          currentModeId: 'default',
+          availableModes: [
+            { id: 'default', name: 'Default' },
+            { id: 'read-only', name: 'Read only' },
+          ],
+        },
       };
+    },
+    setSessionMode: (params) => {
+      log({ mode: params.modeId });
+      return {};
     },
     setSessionConfigOption: (params) => {
       log({ config: { [params.configId]: params.value } });
@@ -94,7 +107,13 @@ const connection = new AgentSideConnection(
         if ('say' in move) {
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: move.say } } });
         } else if ('own' in move) {
-          const toolCall = { toolCallId: `own-${turn}`, title: move.own, kind: move.kind as 'execute' };
+          const toolCall = {
+            toolCallId: `own-${turn}-${move.own}`,
+            title: move.own,
+            ...(move.kind === undefined ? {} : { kind: move.kind as 'execute' }),
+            ...(move.rawInput === undefined ? {} : { rawInput: move.rawInput }),
+            ...(move.meta === undefined ? {} : { _meta: move.meta }),
+          };
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', ...toolCall } });
           const answer = await client.requestPermission({
             sessionId: 's1',
@@ -124,7 +143,7 @@ const connection = new AgentSideConnection(
         sessionId: 's1',
         update: { sessionUpdate: 'usage_update', used: 100, size: 1000, cost: { amount: 0.01 * turn, currency: 'USD' } },
       });
-      return { stopReason: 'end_turn', usage: { totalTokens: 15, inputTokens: 10, outputTokens: 5, cachedReadTokens: 4 } };
+      return { stopReason: 'end_turn', usage: JSON.parse(process.env['ACP_USAGE'] ?? '{"totalTokens":15,"inputTokens":10,"outputTokens":5,"cachedReadTokens":4}') as Usage };
     },
   }),
   ndJsonStream(Writable.toWeb(process.stdout) as WritableStream<Uint8Array>, Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>),
