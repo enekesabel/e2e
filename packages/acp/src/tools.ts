@@ -1,45 +1,50 @@
 /**
  * The tools a session offers: the built-in agent's action tools
- * (`createGrammarTools` from `e2e/agent`) and `complete_step`. An ACP session
- * lists its tools once, while e2e builds the action tools per step, so the
- * session lists them from its first step and each call runs the active
- * step's own tool of that name. Every action goes through `ctx.actions`,
- * where the runner authorizes, counts, and records it, so steps replay from
- * the cache as the built-in agent's do.
+ * (`createGrammarTools` from `e2e/agent`) and its `complete_step`
+ * (`createVerdictTool`). An ACP session lists its tools once, while e2e
+ * builds them per step, so the session lists them from its first step and
+ * each call runs the active step's own tool of that name. Every action goes
+ * through `ctx.actions`, where the runner authorizes, counts, and records
+ * it, so steps replay from the cache as the built-in agent's do.
  */
 
-import { isAgentError, type StepExecutorContext, type StepVerdict } from 'e2e';
-import { createGrammarTools } from 'e2e/agent';
-import { z } from 'zod';
+import type { StepExecutorContext, StepVerdict } from 'e2e';
+import { createGrammarTools, createVerdictTool, isRuntimeHardStop, type ScreenOutput, type VerdictTool } from 'e2e/agent';
+import type { z } from 'zod';
 import type { ServedTool, ToolResult } from './mcp.ts';
 
-/** Error codes the runtime owns: they end the step and are rethrown untouched, never shown to the agent as an action failure. */
-const RUNTIME_CODES = new Set(['STEP_BUDGET_EXHAUSTED', 'STEP_TIMEOUT', 'CANCELLED']);
-
 /** Tools that change nothing in the app, so an assertion may use them. */
-const READ_ONLY = new Set(['observe', 'screenshot', 'scroll', 'scroll_to']);
+const READ_ONLY = new Set(['observe', 'screenshot', 'scroll', 'scroll_to', 'hover', 'hover_at']);
 
-/** One action tool as `createGrammarTools` builds it: an AI SDK tool. */
-interface GrammarTool {
+/** One tool as `e2e/agent` builds it: an AI SDK tool. */
+interface AgentTool {
   readonly description?: string;
   readonly inputSchema: unknown;
   readonly execute?: (input: unknown, options: { toolCallId: string; messages: [] }) => unknown;
 }
-type GrammarTools = Readonly<Record<string, GrammarTool>>;
-
-/** A rendered screen, as the action tools return it: text, or text with the screenshot. */
-type ScreenOutput = string | { readonly text: string; readonly pixels: { readonly data: Uint8Array; readonly mediaType: string } };
+type AgentTools = Readonly<Record<string, AgentTool>>;
 
 /** The step a session serves now. */
 export interface ActiveStep {
   readonly ctx: StepExecutorContext;
-  verdict: StepVerdict | undefined;
+  /** The step's `complete_step`, which holds its verdict once the agent concludes. */
+  readonly conclusion: VerdictTool;
   /** A runtime error a tool hit; the turn is cancelled and `runStep` rethrows it. */
   halted: unknown;
   /** Tool names in call order, for the transcript. */
   readonly calls: string[];
   /** The step's own action tools, built on its first look. */
-  tools?: GrammarTools;
+  tools?: AgentTools;
+}
+
+/** The step a session starts serving, with nothing concluded yet. */
+export function activeStep(ctx: StepExecutorContext): ActiveStep {
+  return { ctx, conclusion: createVerdictTool(), halted: undefined, calls: [] };
+}
+
+/** The verdict the agent concluded the step with, if it did. */
+export function verdictOf(active: ActiveStep): StepVerdict | undefined {
+  return active.conclusion.verdict();
 }
 
 /** Where the tools find the active step, and how a tool ends the turn early. */
@@ -50,13 +55,13 @@ export interface StepSlot {
 }
 
 /** The active step's action tools, built once per step so its screens report changes against the one before. */
-function toolsOf(active: ActiveStep): GrammarTools {
-  active.tools ??= createGrammarTools(active.ctx) as GrammarTools;
+function toolsOf(active: ActiveStep): AgentTools {
+  active.tools ??= createGrammarTools(active.ctx) as AgentTools;
   return active.tools;
 }
 
-/** Runs one action tool of the step and returns its rendered screen. */
-async function run(tools: GrammarTools, name: string, input: unknown): Promise<ScreenOutput> {
+/** Runs one tool and returns what it answered. */
+async function run(tools: AgentTools, name: string, input: unknown): Promise<ScreenOutput> {
   const tool = tools[name];
   if (tool?.execute === undefined) throw new Error(unavailable(name));
   return (await tool.execute(input, { toolCallId: name, messages: [] })) as ScreenOutput;
@@ -65,7 +70,7 @@ async function run(tools: GrammarTools, name: string, input: unknown): Promise<S
 /** The step's first screen, whole: the first look of its action tools, which later results report changes against. */
 export async function openingScreen(active: ActiveStep): Promise<string> {
   const output = await run(toolsOf(active), 'observe', {});
-  return (typeof output === 'string' ? output : output.text).replace(/^Observed\.\s*/, '');
+  return typeof output === 'string' ? output : output.text;
 }
 
 /** The listed tools the active step does not offer, by the reason it would give. */
@@ -78,7 +83,7 @@ export function missingTools(active: ActiveStep, listed: readonly ServedTool[]):
 export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedTool[] {
   const current = (name: string): ActiveStep => {
     const active = slot.active;
-    if (active === undefined || active.verdict !== undefined || active.halted !== undefined) {
+    if (active === undefined || active.conclusion.concluded() || active.halted !== undefined) {
       throw new Error('No step is active. Wait for the next instruction.');
     }
     active.calls.push(name);
@@ -91,7 +96,7 @@ export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedToo
       active = current(name);
       return await body(active);
     } catch (error) {
-      if (active !== undefined && isAgentError(error) && RUNTIME_CODES.has(error.code)) {
+      if (active !== undefined && isRuntimeHardStop(error)) {
         active.halted = error;
         slot.halt();
         return { text: `The step has ended (${error.code}). Stop and wait for the next instruction.`, isError: true };
@@ -110,26 +115,23 @@ export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedToo
       run: (args) =>
         guarded(name, async (active) => {
           if (!readOnly && active.ctx.step.kind === 'assert') {
-            throw new Error('this step is an assertion: read the screen and conclude, do not act');
+            throw new Error('this step is an assertion: read the screen and conclude, do not change it');
           }
           return result(await run(toolsOf(active), name, args));
         }),
     });
   }
+  const conclusion = createVerdictTool().tool as AgentTool;
   tools.push({
     name: 'complete_step',
-    description:
-      'End the current step. For an action step, "passed" when the screen shows the outcome the step asked for. For an assertion, "passed" when the condition holds on the current screen. "failed" otherwise, saying why.',
-    inputSchema: z.object({ status: z.enum(['passed', 'failed']), summary: z.string() }).strict(),
+    description: conclusion.description ?? 'complete_step',
+    inputSchema: conclusion.inputSchema as z.ZodObject,
     readOnly: true,
     run: (args) =>
       guarded('complete_step', async (active) => {
-        const summary = String(args['summary']).trim() || 'no summary given';
-        active.verdict =
-          args['status'] === 'passed'
-            ? { status: 'passed', summary }
-            : { status: 'failed', summary, errorCode: active.ctx.step.kind === 'assert' ? 'ASSERTION_FAILED' : 'ACTION_FAILED' };
-        return { text: 'Step recorded. Wait for the next instruction.' };
+        const answer = await run({ complete_step: active.conclusion.tool as AgentTool }, 'complete_step', args);
+        const text = typeof answer === 'string' ? answer : answer.text;
+        return { text: active.conclusion.concluded() ? `${text} Wait for the next instruction.` : text };
       }),
   });
   return tools;
@@ -145,12 +147,12 @@ const TYPE_SECRET =
  * step that declares secrets, and `screenshot` goes once a secret was filled;
  * a call of either where the active step has none says why.
  */
-function listing(first: StepExecutorContext): GrammarTools {
+function listing(first: StepExecutorContext): AgentTools {
   const widest = Object.create(first, {
     pixelsTainted: { value: false },
     step: { value: { ...first.step, secrets: [{ name: 'secret', purpose: 'password' }] } },
   }) as StepExecutorContext;
-  return createGrammarTools(widest) as GrammarTools;
+  return createGrammarTools(widest) as AgentTools;
 }
 
 function unavailable(name: string): string {

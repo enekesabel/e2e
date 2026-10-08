@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { AgentError, type JsonValue, type StepExecutor, type StepExecutorContext, type StepVerdict } from 'e2e';
-import { BASE_RULES } from 'e2e/agent';
+import { BASE_RULES, VERDICT_RULES } from 'e2e/agent';
 import { ConfigurationError } from 'e2e/engine';
-import { startSession, type AcpSession, type TurnReport } from './session.ts';
-import { missingTools, openingScreen, stepTools, type ActiveStep, type StepSlot } from './tools.ts';
+import { claudeCodeLaunch, codexLaunch, cursorLaunch } from './presets.ts';
+import type { Usage } from '@agentclientprotocol/sdk';
+import { startSession, type AcpSession, type AgentLaunch, type TurnReport } from './session.ts';
+import { activeStep, missingTools, openingScreen, stepTools, verdictOf, type ActiveStep, type StepSlot } from './tools.ts';
 import type { ServedTool } from './mcp.ts';
-import type { AcpExecutorOptions } from './types.ts';
+import type { AcpAgentOptions, AcpExecutorOptions } from './types.ts';
 
 /** What the session is, before the built-in agent's rules for the same tools. */
 const SESSION_RULES = `This conversation drives a real application for an end-to-end test, one step per message: an action to perform, or an assertion to judge, with the current screen.
 Use only the tools of this conversation. You have no access to the application's source, files, shell, or network.
 The rules below are for each step. A step ends when you call complete_step; then wait for the next message. For an assertion, judge the condition from the screen without changing anything.`;
 
-const RULES = `${SESSION_RULES}\n\n${BASE_RULES}`;
+const RULES = `${SESSION_RULES}\n\n${BASE_RULES}\n\n${VERDICT_RULES}`;
 
 interface Held {
   readonly session: Promise<AcpSession>;
@@ -23,33 +25,59 @@ interface Held {
 }
 
 /**
- * Builds a step executor that runs `agent.act` and `agent.assert` on an
+ * Builds a step executor that runs `agent.act` and `agent.assert` on any
  * ACP agent: one agent session per test attempt, started by its first agent
- * step and closed when the attempt ends.
+ * step and closed when the attempt ends. `acpExecutor.claudeCode()`,
+ * `.codex()`, and `.cursor()` start those agents with the step tools as
+ * their only tools.
  */
 export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
   if (typeof options !== 'object' || options === null || typeof options.command !== 'string' || options.command === '') {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      "acpExecutor() takes { command, args }, e.g. acpExecutor({ command: 'npx', args: ['@agentclientprotocol/claude-agent-acp'] })",
+      "acpExecutor() takes { command, args }, e.g. acpExecutor({ command: 'agent', args: ['acp'] }), or use acpExecutor.claudeCode(), .codex(), or .cursor()",
     );
   }
+  const launch: AgentLaunch = {
+    command: options.command,
+    args: options.args ?? [],
+    env: options.env,
+    model: options.model,
+    mode: options.mode,
+    sessionMeta: options.sessionMeta,
+  };
+  return executor(options.name ?? 'acp', options, async () => launch);
+}
+
+/** Claude Code through Zed's adapter (`@agentclientprotocol/claude-agent-acp`), signed in with your `claude` login. */
+acpExecutor.claudeCode = (options: AcpAgentOptions = {}): StepExecutor =>
+  executor(options.name ?? 'claude-code', options, claudeCodeLaunch(options));
+
+/** Codex through its adapter (`@agentclientprotocol/codex-acp`), signed in with your `codex` login. */
+acpExecutor.codex = (options: AcpAgentOptions = {}): StepExecutor => executor(options.name ?? 'codex', options, codexLaunch(options));
+
+/** Cursor's CLI (`agent`) in its ACP mode, signed in with your `agent` login. */
+acpExecutor.cursor = (options: AcpAgentOptions = {}): StepExecutor => executor(options.name ?? 'cursor', options, cursorLaunch(options));
+
+function executor(name: string, options: AcpAgentOptions, launch: () => Promise<AgentLaunch>): StepExecutor {
   // Where an attempt's session lives in `attempt.memory`: one key per executor, so two ACP agents never share a session.
   const memoryKey = `@e2e-dev/acp.session.${randomUUID()}`;
   return {
-    name: options.name ?? 'acp',
+    name,
     version: '1',
     cache: 'inherit',
     async runStep(ctx) {
-      const held = hold(ctx, options, memoryKey);
+      const held = hold(ctx, launch, memoryKey);
       let session: AcpSession;
       try {
-        session = await held.session;
+        session = await untilAborted(held.session, ctx.signal);
       } catch (error) {
+        ctx.signal.throwIfAborted();
         ctx.attempt.memory.delete(memoryKey);
+        if (error instanceof ConfigurationError) throw error;
         throw new AgentError('MODEL_PROVIDER_FAILED', `The ACP agent did not start: ${message(error)}`, { cause: error });
       }
-      const active: ActiveStep = { ctx, verdict: undefined, halted: undefined, calls: [] };
+      const active = activeStep(ctx);
       const text = await stepMessage(active, held.tools, held.introduced ? undefined : [RULES, options.system, ctx.agentContext]);
       held.introduced = true;
       held.slot.active = active;
@@ -79,20 +107,20 @@ export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
         ...(usage === undefined
           ? {}
           : {
-              inputTokens: usage.inputTokens,
+              inputTokens: inputTokens(usage),
               outputTokens: usage.outputTokens,
               ...(usage.cachedReadTokens == null ? {} : { cacheReadTokens: usage.cachedReadTokens }),
               ...(usage.cachedWriteTokens == null ? {} : { cacheWriteTokens: usage.cachedWriteTokens }),
             }),
         ...(report.costUsd === undefined ? {} : { estimatedCostUsd: report.costUsd }),
       });
-      return active.verdict ?? noConclusion(report);
+      return verdictOf(active) ?? noConclusion(report);
     },
   };
 }
 
 /** The attempt's session, started on its first step and closed when the attempt ends. */
-function hold(ctx: StepExecutorContext, options: AcpExecutorOptions, memoryKey: string): Held {
+function hold(ctx: StepExecutorContext, launch: () => Promise<AgentLaunch>, memoryKey: string): Held {
   const existing = ctx.attempt.memory.get(memoryKey) as Held | undefined;
   if (existing !== undefined) return existing;
   let session: AcpSession | undefined;
@@ -103,11 +131,13 @@ function hold(ctx: StepExecutorContext, options: AcpExecutorOptions, memoryKey: 
     slot,
     tools,
     introduced: false,
-    session: startSession(options, tools, ctx.attempt.signal).then((started) => {
-      session = started;
-      if (closed) started.close();
-      return started;
-    }),
+    session: launch()
+      .then((how) => startSession(how, tools, ctx.attempt.signal))
+      .then((started) => {
+        session = started;
+        if (closed) started.close();
+        return started;
+      }),
   };
   held.session.catch(() => undefined);
   ctx.attempt.memory.set(memoryKey, held);
@@ -120,6 +150,17 @@ function hold(ctx: StepExecutorContext, options: AcpExecutorOptions, memoryKey: 
     { once: true },
   );
   return held;
+}
+
+/** Waits for `promise`, or rejects when the step ends first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return Promise.race([promise, aborted]).finally(() => signal.removeEventListener('abort', onAbort!));
 }
 
 /** The message for one step: the rules on the first, then the step, what already ran, and the screen. */
@@ -162,6 +203,18 @@ function plainParams(params: Readonly<Record<string, JsonValue>> | undefined): R
 /** A secret in the params, as the runner projects it: `{ kind: 'secret', name, purpose }`. */
 function isSecretPlaceholder(value: JsonValue): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && (value as Record<string, JsonValue>)['kind'] === 'secret';
+}
+
+/**
+ * The turn's input tokens with the cached ones included, as e2e counts them.
+ * ACP leaves open whether an agent's `inputTokens` include them: the Claude
+ * adapter's do not (its total adds the cache on top), Codex's do (its total
+ * is input and output alone).
+ */
+function inputTokens(usage: Usage): number {
+  const cached = (usage.cachedReadTokens ?? 0) + (usage.cachedWriteTokens ?? 0);
+  const cacheApart = cached > 0 && usage.totalTokens >= usage.inputTokens + usage.outputTokens + cached;
+  return cacheApart ? usage.inputTokens + cached : usage.inputTokens;
 }
 
 function noConclusion(report: TurnReport): StepVerdict {
