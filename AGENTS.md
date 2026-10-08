@@ -137,6 +137,13 @@ suites that consume the built packages the way a user would.
   call leaves its tests in and the rest are still judged; after 3 failed
   calls it stops asking. When every call fails, or git or a file read
   fails, it throws, and the run warns and runs every test.
+- `packages/acp` — the published `@e2e-dev/acp` package: a `StepExecutor`
+  (`acpExecutor()`, with `.claudeCode()` and `.codex()` presets) that runs
+  `agent.act` and `agent.assert` on a coding agent over the Agent Client
+  Protocol. The step tools (`createGrammarTools`, `createVerdictTool` from
+  `e2e/agent`) reach the agent as an MCP server on 127.0.0.1; permission
+  requests for anything else are rejected, and a tool of the agent's own
+  that runs without asking fails the step with `POLICY_DENIED`.
 - `packages/github` — the published `@e2e-dev/github` package: the reporter
   that posts the run as one pull request comment from GitHub Actions and
   keeps it current on reruns, writing the same text to the job summary. It

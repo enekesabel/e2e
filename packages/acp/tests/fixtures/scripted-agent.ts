@@ -2,8 +2,8 @@
  * A scripted ACP agent on stdio, for tests. `ACP_SCRIPT` is a JSON array
  * with one entry per prompt turn, or an object keyed by text the prompt
  * contains, each a list of moves: call one of the
- * client's MCP tools, ask permission for a tool of the agent's own, or say
- * something. Every prompt and tool result is appended to `ACP_LOG` as JSON
+ * client's MCP tools, ask permission for a tool of the agent's own, run one
+ * without asking, say something, or hang until cancelled or for good. Every prompt and tool result is appended to `ACP_LOG` as JSON
  * lines, with the tool list the session saw, and the `E2E_` variables and
  * `CODEX_CONFIG` it started with. `ACP_USAGE` is the usage each turn reports. With `ACP_HANG_INIT` set, the agent never
  * answers `initialize`.
@@ -18,8 +18,10 @@ type Move =
   /** `on` picks the target id: the newest screen line that contains it. */
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
   | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
+  | { readonly ran: string; readonly kind?: string }
   | { readonly say: string }
-  | { readonly hang: true };
+  | { readonly hang: true }
+  | { readonly ignoreCancel: true };
 
 /** Moves per turn in order, or per step: the moves of the first key the prompt contains. */
 const script = JSON.parse(process.env['ACP_SCRIPT'] ?? '[]') as Move[][] | Record<string, Move[]>;
@@ -124,6 +126,14 @@ const connection = new AgentSideConnection(
             ],
           });
           log({ permission: move.own, outcome: answer.outcome });
+        } else if ('ran' in move) {
+          // A tool of the agent's own that runs without asking.
+          const toolCallId = `ran-${turn}-${move.ran}`;
+          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', toolCallId, title: move.ran, kind: (move.kind ?? 'read') as 'read', status: 'in_progress' } });
+          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' } });
+          log({ ran: move.ran });
+        } else if ('ignoreCancel' in move) {
+          await new Promise<never>(() => undefined);
         } else if ('hang' in move) {
           if (!cancelRequested) {
             await new Promise<void>((resolve) => {
