@@ -247,6 +247,10 @@ apply.
 
 ## Next
 
+For a model your executor drives itself, `createVerdictTool()` from
+`e2e/agent` is the built-in agent's `complete_step`. Give the model its
+`tool` and `VERDICT_RULES`, then return `verdict()`.
+
 <CardGroup cols={2}>
   <Card title="agent reference" icon="wand-magic-sparkles" href="/reference/agent">
     Every method, option, and budget.
