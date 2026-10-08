@@ -8,7 +8,7 @@
  *   pnpm build
  *   node packages/acp/tests/live/acp.ts
  *
- * ACP_AGENT picks the preset (claudeCode, the default, codex, or cursor) and
+ * ACP_AGENT picks the preset (claudeCode, the default, or codex) and
  * ACP_MODEL its model. The adapter comes from ACP_ADAPTERS, a node_modules
  * directory that has it installed, or is installed into the project.
  * ACP_KEEP=1 keeps the project for a look at its traces.
@@ -27,10 +27,9 @@ const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const password = 'acp-live-secret-value';
 const preset = process.env['ACP_AGENT'] ?? 'claudeCode';
-const ADAPTERS: Record<string, string | undefined> = {
+const ADAPTERS: Record<string, string> = {
   claudeCode: '@agentclientprotocol/claude-agent-acp@0.88.0',
   codex: '@agentclientprotocol/codex-acp@2.1.1',
-  cursor: undefined,
 };
 if (!(preset in ADAPTERS)) throw new Error(`ACP_AGENT must be one of ${Object.keys(ADAPTERS).join(', ')}`);
 const model = process.env['ACP_MODEL'] ?? (preset === 'claudeCode' ? 'sonnet' : '');
@@ -53,15 +52,12 @@ const appUrl = `http://127.0.0.1:${(app.address() as AddressInfo).port}`;
 
 const directory = await mkdtemp(join(tmpdir(), 'e2e-acp-live-'));
 await mkdir(join(directory, 'node_modules/@e2e-dev'), { recursive: true });
-const adapter = ADAPTERS[preset];
-if (adapter !== undefined) {
-  const adapters = process.env['ACP_ADAPTERS'];
-  if (adapters === undefined) {
-    await writeFile(join(directory, 'package.json'), '{"type":"module"}');
-    await execFileAsync('npm', ['install', '--no-save', '--silent', adapter], { cwd: directory, timeout: 600_000 });
-  } else {
-    await symlink(join(adapters, '@agentclientprotocol'), join(directory, 'node_modules/@agentclientprotocol'));
-  }
+const adapters = process.env['ACP_ADAPTERS'];
+if (adapters === undefined) {
+  await writeFile(join(directory, 'package.json'), '{"type":"module"}');
+  await execFileAsync('npm', ['install', '--no-save', '--silent', ADAPTERS[preset]!], { cwd: directory, timeout: 600_000 });
+} else {
+  await symlink(join(adapters, '@agentclientprotocol'), join(directory, 'node_modules/@agentclientprotocol'));
 }
 await symlink(join(root, 'e2e'), join(directory, 'node_modules/e2e'));
 await symlink(join(root, 'acp'), join(directory, 'node_modules/@e2e-dev/acp'));
@@ -162,7 +158,7 @@ try {
       else {
         const text = await readFile(path, 'utf8');
         if (text.includes(password)) leaked.push(path);
-        foreign.push(...(text.match(/^not ours \(rejected when asked\): .*$/gm) ?? []));
+        foreign.push(...(text.match(/^(?:rejected tools|tools) of the agent's own.*$/gm) ?? []));
       }
     }
   };

@@ -52,11 +52,11 @@ async function contents(directory: string): Promise<string[]> {
 describe('acp executor through the built CLI and real Chromium', () => {
   let directory: string;
   let app: Server;
-  const runs: { status: Map<string, string>; prompts: string[] }[] = [];
+  const runs: { status: Map<string, string>; prompts: string[]; log: string }[] = [];
   let artifacts: string[] = [];
 
-  /** One `e2e run`: the tests' statuses and the prompts the agent received. */
-  async function run(): Promise<{ status: Map<string, string>; prompts: string[] }> {
+  /** One `e2e run`: the tests' statuses, the prompts the agent received, and its whole log, tool results included. */
+  async function run(): Promise<{ status: Map<string, string>; prompts: string[]; log: string }> {
     const log = join(directory, `agent-${runs.length}.jsonl`);
     let output = '';
     try {
@@ -74,12 +74,13 @@ describe('acp executor through the built CLI and real Chromium', () => {
       throw new Error(output, { cause: error });
     });
     const report = reportSchema.parse(JSON.parse(raw));
-    const prompts = (await readFile(log, 'utf8').catch(() => ''))
+    const agentLog = await readFile(log, 'utf8').catch(() => '');
+    const prompts = agentLog
       .split('\n')
       .filter((line) => line.trim() !== '')
       .map((line) => JSON.parse(line) as { prompt?: string })
       .flatMap((entry) => (entry.prompt === undefined ? [] : [entry.prompt]));
-    return { status: new Map(report.run.results.map((result) => [result.titlePath.at(-1) ?? '', result.status])), prompts };
+    return { status: new Map(report.run.results.map((result) => [result.titlePath.at(-1) ?? '', result.status])), prompts, log: agentLog };
   }
 
   beforeAll(async () => {
@@ -152,7 +153,8 @@ describe('acp executor through the built CLI and real Chromium', () => {
   it('fills a secret by name without the value reaching the agent or the artifacts', () => {
     expect(runs[0]?.status.get('secret login')).toBe('passed');
     expect(runs[0]?.prompts.join('\n')).toContain('Secrets to fill with type_secret, by name: admin.password');
-    expect(runs[0]?.prompts.join('\n')).not.toContain(password);
+    expect(runs[0]?.log).toContain('"call":"type_secret"');
+    expect(runs[0]?.log).not.toContain(password);
     for (const artifact of artifacts) expect(artifact).not.toContain(password);
   });
 

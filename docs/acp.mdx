@@ -1,6 +1,6 @@
 ---
 title: Your coding agent
-description: Run agent steps on Claude Code, Codex, Cursor, or any agent that speaks the Agent Client Protocol.
+description: Run agent steps on Claude Code, Codex, or any agent that speaks the Agent Client Protocol.
 icon: "terminal"
 ---
 
@@ -80,37 +80,6 @@ export default {
 } satisfies E2EConfig;
 ```
   </Tab>
-  <Tab title="Cursor">
-Cursor's CLI has an ACP mode built in. Install the package, and sign in
-with `agent login` first.
-
-<CodeGroup>
-```bash npm
-npm install -D @e2e-dev/acp
-```
-
-```bash pnpm
-pnpm add -D @e2e-dev/acp
-```
-
-```bash bun
-bun add -d @e2e-dev/acp
-```
-</CodeGroup>
-
-```ts title="e2e.config.ts"
-import type { E2EConfig } from 'e2e';
-import { web } from '@e2e-dev/web';
-import { acpExecutor } from '@e2e-dev/acp';
-
-export default {
-  targets: [{ engine: web(), app: { url: 'http://localhost:3000' } }],
-  agents: {
-    default: { executor: acpExecutor.cursor() },
-  },
-} satisfies E2EConfig;
-```
-  </Tab>
 </Tabs>
 
 Tests stay plain natural language:
@@ -126,7 +95,7 @@ test('adds a todo', async ({ app, screen, agent }) => {
 });
 ```
 
-`acpExecutor.claudeCode()`, `.codex()`, and `.cursor()` take these options:
+`acpExecutor.claudeCode()` and `acpExecutor.codex()` take these options:
 
 | Option | What it does |
 | --- | --- |
@@ -137,16 +106,17 @@ test('adds a todo', async ({ app, screen, agent }) => {
 
 ## Other agents
 
-`acpExecutor({ command, args })` starts any agent that speaks ACP on stdio.
-It also takes `mode`, a session mode to select, and `sessionMeta`, the
-`_meta` of `session/new` that the agent's adapter documents.
+`acpExecutor({ command, args })` starts any agent that speaks ACP on stdio,
+such as Cursor's CLI. It also takes `mode`, a session mode to select, and
+`sessionMeta`, the `_meta` of `session/new` that the agent's adapter
+documents.
 
 ```ts
-executor: acpExecutor({ command: 'my-agent', args: ['acp'], model: 'fast' }),
+executor: acpExecutor({ command: 'agent', args: ['acp'] }),
 ```
 
 The agent keeps its own tools, so turn them off the way the agent allows.
-See [Limits](#limits).
+See [Containment](#containment).
 
 ## How a test runs
 
@@ -169,7 +139,8 @@ when the environment or test setup prevented a verdict.
 A secret in the params reaches the agent by name only. The agent fills it
 with `type_secret`, and the runner authorizes the fill and types the value
 itself, the same as for the built-in agent. The agent's process does not
-get the `E2E_SECRET_*` and `E2E_USER_*` variables.
+get the `E2E_SECRET_*` and `E2E_USER_*` variables; it gets every other
+variable of the runner's environment.
 
 ## Containment
 
@@ -178,7 +149,9 @@ own tools is not recorded, cannot replay, and can reach files or the web
 the test never meant it to. The agent process starts in your project, its
 session opens in an empty temporary directory, and e2e advertises no file
 system or terminal access to it. When the agent asks permission for a tool,
-calls of the step tools are allowed and anything else is rejected.
+calls of the step tools are allowed and anything else is rejected. When a
+tool of the agent's own runs without asking, e2e stops the turn and fails
+the step with `POLICY_DENIED`.
 
 Each preset also turns off the agent's own tools that run without asking:
 
@@ -187,9 +160,8 @@ Each preset also turns off the agent's own tools that run without asking:
   permission prompts.
 - Codex: read-only mode, no shell, web search, apps, plugins, browser, or
   computer use, and every MCP server from your Codex config turned off for
-  these sessions only. Codex can still start subagents, which get the same
-  tools.
-- Cursor: in our runs, Cursor used only the step tools with no options.
+  these sessions only. Codex can still start a subagent, which fails the
+  step like any tool of its own.
 
 ## Limits
 
