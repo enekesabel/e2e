@@ -225,8 +225,7 @@ export default {
 
 <Note>
 Setting `headers` disables the browser's HTTP cache and blocks service
-workers. Playwright traces include request headers, so a protected-preview
-trace can contain your bypass secret. Restrict access to those traces.
+workers.
 </Note>
 
 ## Viewports
@@ -323,6 +322,12 @@ The agent receives the current viewport size with each observation.
 Screenshots cover that viewport. Off-screen elements can still appear in
 the tree, and tapping them scrolls them into view. The agent can scroll to
 reveal lazy-loaded content.
+
+A sentence that contains a link, bold or italic text, or code reaches the
+agent whole, as it reads on screen, and the link is also listed as a
+control the agent can tap. The agent reads the first 512 characters of each
+block of text; in a longer one, the links and emphasized text are also
+listed on their own.
 
 Resize before calling `agent.act`:
 

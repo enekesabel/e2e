@@ -128,12 +128,14 @@ suites that consume the built packages the way a user would.
   diffs against the source minimal, and name no company a scenario was
   distilled from.
 - `examples/` — standalone user-facing projects, one per technology
-  (`with-vite`, `with-next`, `with-expo`, `with-swiftui`), each the same
+  (`with-vite`, `with-next`, `with-astro`, `with-expo`, `with-swiftui`,
+  `with-compose`, `with-kotlin-multiplatform`, `with-flutter`), each the same
   one-screen greeter demo with deterministic and agent tests. They install
   the published packages from npm, sit outside the pnpm workspace, commit no
   lockfile, and run in no CI; oxlint and fallow ignore them. A change runs
   the example's suite by hand and updates the "Last checked" line in its
-  README. A SwiftUI example keeps its tests in an `e2e/` folder beside the
+  README. A native or Flutter example (SwiftUI, Compose, Kotlin
+  Multiplatform, Flutter) keeps its tests in an `e2e/` folder beside the
   native project, as a user would.
 - `docs/` (the Mintlify docs site; pages are the `.mdx` files under `docs/`,
   navigation, theme, and redirects in `docs/docs.json`, extra CSS in
@@ -153,6 +155,24 @@ suites that consume the built packages the way a user would.
   (gitignored) so the published package ships it; `src/cli/skill.ts` reads
   that copy first and the repo source as the fallback, and `e2e init` writes
   it into a project's `.agents/skills/` and `.claude/skills/`.
+- `skills/create-verification-skill/`: a generator skill for consumers;
+  it writes a project-local `verify-<app>` skill and feature map on top of
+  e2e, with the bug bash wired to the map. Installed with `npx skills add
+  tester-army/e2e --skill create-verification-skill`; not shipped in the
+  package and not read by `e2e guide`. `references/example/` is the skill
+  it generated and ran for `apps/testbed`: regenerate it when a playground
+  route, label, or test it names changes.
+- `.dev/skills/` — the skills we use to work on this repo (`babysit`,
+  `ship-pr`, `verify`, `writing-pr`). `npx skills add tester-army/e2e`
+  offers only `skills/*`: its default scan never looks in `.dev/`, and it skips
+  `.claude/skills/<name>`, the relative symlink to each that agents load
+  them through, because it does not follow symlinked directories. Its
+  `--full-depth` scan does reach `.dev/skills/`; there the frontmatter's
+  `metadata.internal: true` hides them. A new repo-only skill goes in
+  `.dev/skills/` with both. On Windows the symlinks need Developer Mode and
+  `core.symlinks=true` (CONTRIBUTING.md). The vendored third-party skills in `.claude/skills/` (`unbox-ai`,
+  `unslop`, tracked by `skills-lock.json`) stay where they are: the CLI
+  skips them as installed project skills.
 
 ## Commands
 
@@ -196,16 +216,16 @@ against the built packages, reviewed in a fresh context, green, every bot
 thread handled, and labeled `Ready for Human Review`. "It compiles" and
 "tests pass" are not done.
 
-- Prove behavior with the `verify` skill (`.claude/skills/verify`) while
+- Prove behavior with the `verify` skill (`.dev/skills/verify`) while
   iterating and before the PR: the built CLI on the testbed or a benchmark,
   the `e2e` MCP server (`.mcp.json`), a scratch project for `init`, the docs
   site. If you cannot verify something, say so; never imply you did.
 - Every PR body states under `## Verified` whether it was run locally, with
   CLI output, screenshots, or video when it was, and a main-vs-branch table
   for fixes (`writing-pr` skill).
-- Open every PR through the `ship-pr` skill (`.claude/skills/ship-pr`):
+- Open every PR through the `ship-pr` skill (`.dev/skills/ship-pr`):
   checks, verification, fresh-context self-review, the PR, then the
-  `babysit` skill (`.claude/skills/babysit`) until the label is on. Asking
+  `babysit` skill (`.dev/skills/babysit`) until the label is on. Asking
   for a PR means asking for all of that. A push removes the label
   (`.github/workflows/review-label.yml`), so a labeled PR is always labeled
   for its current head.
@@ -289,8 +309,9 @@ the fixture project (`tests/integration/agent-ai-trace.test.ts` shows how).
   agent config registers `@ai-sdk/devtools`; that recorder is one database
   per process, hence one worker). Prefer `--ai-trace` for anything to keep.
 - "Trace" means three things here: the recorded actions the replay cache
-  keeps (`trace-1` entries under `.e2e/cache/`), the Playwright trace
-  artifact, and this AI trace. Say which.
+  keeps (`trace-1` entries under `.e2e/cache/`), this AI trace, and the
+  runner's trace page per test (`.e2e/results/<test>/trace.md`). Say
+  which.
 
 ## Cross-checking the web engine's tree
 
@@ -391,18 +412,22 @@ trees, on both platforms, without a device.
   tracked, the testbed's ignores its own, since fixture-app recordings are
   worth nothing to anyone). CI replays the entries read-only and calls the
   model for a step with no recording, so those suites gate a pull request at
-  deterministic speed and cost, for this repository's branches only: a fork's
-  pull request has no key. Re-record with the package's `test:agent` and
-  commit the changed entries in the same pull request as the scenario change.
+  deterministic speed and cost. On a pull request they run for this
+  repository's branches only, since a fork's has no key; the merge queue runs
+  them, with the key, for every queued pull request the change reaches.
+  Re-record with the package's `test:agent` and commit the changed entries in
+  the same pull request as the scenario change.
   The web benchmark's agent job runs with `--strict-cache`, so a recording a
   change broke fails with `REPLAY_STALE` instead of quietly calling the model.
   That includes a change to the cache key (`REPLAY_POLICY_VERSION`, a new key
   field): strict lists the file store and fails a step whose
   key misses while an entry recorded for the same step sits under another key
   (`cache/rekeyed.ts`). Only entries whose `recordedFor` names the whole step
-  (params digest, occurrence, agent) count; a `read-write` replay completes
-  an older one. Such a change re-records every entry and deletes the old ones
-  in the same pull request. A step that was never recorded still runs live.
+  (params digest, occurrence, agent) count; a lenient `read-write` replay
+  completes an older one. Such a change re-records every entry and deletes the
+  old ones in the same pull request. A step that was never recorded still runs
+  live. A strict run replays on retries too and never writes or deletes an
+  entry, whatever the mode.
   The web benchmark's entries are in. The mobile benchmark's iOS entries are
   recorded on a Mac; nobody has recorded on an Android emulator yet, so the
   Android side spends model calls until an emulator recording is committed.
@@ -424,9 +449,9 @@ trees, on both platforms, without a device.
     secret an engine resolves for an option the app sees (basic auth) is
     protected as text only: redacted everywhere text goes, pixels untouched.
     One exposure level per session (`SecretExposure` in `run/secrecy.ts`)
-    decides pixels and the taint a saved session carries; traces and text
-    downloads are rewritten whenever the session's ledger holds a value
-    (`redactsRecordings`), since a plain string reaches the app unseen. What
+    decides pixels and the taint a saved session carries; text downloads are
+    rewritten whenever the session's ledger holds a value
+    (`redactsDownloads`), since a plain string reaches the app unseen. What
     an executor keeps in `attempt.memory` is its own; the harness never
     reports it.
   - An agent's secret fill is authorized by the runner, not the model.
@@ -464,23 +489,34 @@ trees, on both platforms, without a device.
     names, and never let a label become a path component.
   - Test, config, and engine code run with the runner's full OS authority;
     nothing here sandboxes them. Untrusted PR code belongs in an external
-    sandbox with no secrets or write tokens.
+    sandbox with no secrets or write tokens. The merge queue runs a queued
+    pull request's code with the repository's secrets, fork or not, so
+    enqueueing (auto-merge included) is the trust decision: review a fork's
+    test, config, and engine changes before you enqueue it.
 
 - CI: `.github/workflows/spec.yml` runs lint, typecheck, and the testbed on
   Node 26, `pnpm test` on the newest Node 22, 24, and 26 and on the
   `engines.node` floors (22.22.3, 24.8.0), and `scripts/install-smoke.ts`, a
   fresh install of the packed packages with pnpm 11 and 12; `benchmark.yml` runs the
   web benchmark's two suites; `mobile.yml` runs the mobile benchmark's on an
-  iOS simulator and an Android emulator (KVM on x64 Linux). The two
-  benchmark workflows gate on paths: a `changes` job (dorny/paths-filter
-  over `.github/filters.yml`) skips the suites when the change reaches
-  neither the runner, the engine, nor the benchmark app, and a manual
-  dispatch always runs them. Skipped satisfies the ruleset's required
-  checks; a workflow-level `paths:` filter would leave them pending, so
-  never gate those workflows that way. The mobile suites are four named
-  jobs sharing steps through YAML anchors, not a matrix: a skipped matrix
-  job reports under its unexpanded name and the required check never
-  arrives. A new build input or benchmark dependency goes into
+  iOS simulator and an Android emulator (KVM on x64 Linux); `docs.yml`
+  checks the docs. All four run on pull requests and in the merge queue
+  (`merge_group`), which is the merge gate: auto-merge enqueues, and the
+  queue merges only when every check is green on the queued tree. Each
+  workflow ends in a `<workflow> gate` job, the only checks the `Main`
+  ruleset requires (`spec gate`, `benchmark gate`, `mobile gate`, `docs
+  gate`); it fails when any job it needs failed or was cancelled and passes
+  over a skipped one, so a new job gates merges once it is in its gate's
+  `needs`. The benchmark and docs workflows gate on paths: a `changes` job
+  (dorny/paths-filter over `.github/filters.yml`) skips the suites when the
+  change cannot reach them, and a manual dispatch always runs them. Never
+  use a workflow-level `paths:` filter: the gate would never report and the
+  merge would wait forever. A suite that cannot run (the agentic ones on a
+  fork's or Dependabot's pull request, which get no model key) is skipped at
+  the job level, never at the step level, so it boots no device for nothing.
+  A push to main runs `spec` and the web benchmark; `mobile` only rebuilds
+  the Expo app on a cache miss, since main's caches are the ones every pull
+  request restores. A new build input or benchmark dependency goes into
   `filters.yml` in the same change. Every workflow
   pins actions by SHA; keep new actions SHA-pinned. Every job runs on
   Blacksmith, like the tester-army repos. Linux jobs use
@@ -491,7 +527,7 @@ trees, on both platforms, without a device.
 - Commits follow Conventional Commits; PRs are squash-merged with the number in
   the subject.
 - PR titles and bodies follow the `writing-pr` skill
-  (`.claude/skills/writing-pr/SKILL.md`). `unslop`
+  (`.dev/skills/writing-pr/SKILL.md`). `unslop`
   (`.claude/skills/unslop/SKILL.md`, from `okwasniewski/dotfiles`) applies to
   any prose an agent writes here; other agents install it with
   `npx skills add okwasniewski/dotfiles --skill unslop`.

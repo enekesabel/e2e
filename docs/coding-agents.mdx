@@ -48,6 +48,37 @@ instructions. `init` leaves those files unchanged:
 End-to-end tests use e2e; read .agents/skills/e2e/SKILL.md before writing or running one.
 ```
 
+## A verification skill for your app
+
+The e2e skill teaches an agent the runner. It does not know how your app
+starts, which page proves a feature, or what is not a bug there. The
+`create-verification-skill` skill generates that as a project-local
+`.agents/skills/verify-<app>/` skill: launch and doctor commands from your
+config, the two ways to drive the app (a live `e2e mcp` session, a test),
+what evidence a proof keeps, and a feature map with one `e2e explore`
+charter per feature, so a bug bash fans out from the map. It runs its own
+instructions once before handing over.
+
+<CodeGroup>
+```bash npm
+npx skills add tester-army/e2e --skill create-verification-skill
+```
+
+```bash pnpm
+pnpm dlx skills add tester-army/e2e --skill create-verification-skill
+```
+
+```bash bun
+bunx skills add tester-army/e2e --skill create-verification-skill
+```
+</CodeGroup>
+
+Then ask the agent for `/create-verification-skill`. The generated skill
+links to the e2e skill for everything the runner does and says only what is
+true of your app. The skill is based on
+[create-verification-skill](https://github.com/cursor/plugins/tree/main/pstack/skills/create-verification-skill)
+from poteto's pstack, with e2e in place of a hand-rolled harness.
+
 ## How an agent looks at the app
 
 `e2e mcp` lets the coding agent open and interact with the app. Each agent,
@@ -129,31 +160,18 @@ retrying a run.
 
 ## How an agent reads the result
 
-Every run that gets to its tests writes `.e2e/report.json`. For a report that is easier to read,
-run:
+Every run that gets to its tests writes a trace page for each failed or
+flaky test, in its directory under `.e2e/results/` (`.e2e` is the default
+`output`). The terminal names the page
+under each failed test (`❯ trace .e2e/results/<test>/trace.md`). Start there: it has
+the failing line, every step with what it did (the node an action hit, the
+values an assertion read, the cache's decision, console errors and failed
+requests), the agent's last turns, and the screen at failure.
 
-<CodeGroup>
-```bash npm
-npx e2e run tests/checkout.e2e.ts --reporter list,markdown
-```
-
-```bash pnpm
-pnpm exec e2e run tests/checkout.e2e.ts --reporter list,markdown
-```
-
-```bash bun
-bunx e2e run tests/checkout.e2e.ts --reporter list,markdown
-```
-</CodeGroup>
-
-This writes `.e2e/summary.md` and a page for each failed or flaky test under
-`.e2e/failures/`. Start with the failure page. It includes the failing line,
-steps, recent model turns, and the screen at failure.
-
-When reading JSON, check `run.errors` for run-level failures, then the last
-attempt of each failed result. Its `error`, `steps`, and `artifacts` show
-what failed and how far the test got. `--reporter json` also prints the JSON
-report to stdout.
+Read the page, not `.e2e/report.json`: the report holds the same facts for
+scripts, without the page's reading of them. When a script needs it, check
+`run.errors` for run-level failures, then the last attempt of each failed
+result; `--reporter json` prints it to stdout.
 
 For model-call details, use `--ai-trace` and read the trace with
 [unbox-ai](/debugging#agent-steps). Avoid opening the raw trace in an agent's

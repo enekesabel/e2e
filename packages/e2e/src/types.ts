@@ -617,10 +617,10 @@ export interface TestOptions {
    */
   agent?: string | readonly string[];
   /**
-   * Which of the test's attempts record a trace, in place of the run's: the
+   * Which of the test's attempts keep a trace, in place of the run's: the
    * same modes as the config's `trace`. Innermost wins, over `--trace` too;
-   * inside a serial group the group's value applies, since the group records
-   * as one unit. A mode set here is required of the target's engine.
+   * inside a serial group the group's value applies, since the group runs as
+   * one unit.
    */
   trace?: RecordingMode;
   /**
@@ -1094,10 +1094,8 @@ export interface Target {
   /** The app under test: what it is, where it is served, and the command that starts it. */
   app?: TargetApp;
   /**
-   * Which attempts on this target record a trace, in place of the config's
-   * `trace`; `--trace` and a test's own `trace` win over it. A mode set here
-   * is required of the engine: one that cannot trace fails the run with
-   * `UNSUPPORTED_ARTIFACT`.
+   * Which attempts on this target keep a trace, in place of the config's
+   * `trace`; `--trace` and a test's own `trace` win over it.
    */
   trace?: RecordingMode;
   /**
@@ -1110,7 +1108,7 @@ export interface Target {
 }
 
 /**
- * Which attempts record a trace or a video, and which recordings are kept.
+ * Which attempts keep a trace or record a video, and which are kept.
  * `off`: none. `on`: every attempt, every recording kept.
  * `retain-on-failure`: every attempt records, only the recordings of attempts
  * that did not pass are kept. `on-first-retry`: only the first retry records,
@@ -1162,8 +1160,9 @@ export interface CacheConfig {
    * not found or ambiguous, a rejected action, an end state that did not
    * come back, the app on another screen, an unreadable entry) with
    * `REPLAY_STALE`, instead of handing it to the agent. A step with no
-   * recording, a retry, and a value read off the screen still run live.
-   * `--strict-cache` sets it for one run. Default `false`.
+   * recording and a value read off the screen still run live. Retries
+   * replay too, and the run never writes or deletes an entry, whatever
+   * the mode. `--strict-cache` sets it for one run. Default `false`.
    */
   strict?: boolean;
 }
@@ -1175,7 +1174,7 @@ export interface CacheConfig {
  * test, so a host may use it as its own key.
  */
 export interface StoredArtifact {
-  readonly kind: 'screenshot' | 'trace' | 'video' | 'download' | 'log';
+  readonly kind: 'screenshot' | 'video' | 'download' | 'log';
   readonly mediaType: string;
   readonly bytes: Uint8Array;
   readonly size: number;
@@ -1188,7 +1187,7 @@ export interface StoredArtifact {
    * session's secret values; a store that exports only what the runner
    * vouches for reads this rather than the kind.
    */
-  readonly redaction: 'complete' | 'not-required' | 'incomplete';
+  readonly redaction: 'complete' | 'incomplete';
   readonly runId: string;
   readonly testId: string;
   readonly attemptId: string;
@@ -1243,7 +1242,7 @@ export interface StoredArtifactLink {
 
 /**
  * Where artifacts go. What is recorded is not configured here: `trace` and
- * `video` choose the recordings, and a failure's screenshot and screen text
+ * `video` choose what is kept, and a failure's screenshot and screen text
  * are captured whenever the engine can.
  */
 export interface ArtifactsConfig {
@@ -1296,8 +1295,8 @@ export interface AgentOptions {
   maxInputTokens?: number;
   /**
    * Provider options every model call carries, e.g. a reasoning effort.
-   * OpenAI and Azure OpenAI calls also carry `store: false` and a prompt
-   * cache key unless set here.
+   * OpenAI and Azure OpenAI Responses calls also carry `store: false` and a
+   * prompt cache key unless set here.
    */
   providerOptions?: ProviderOptions;
   /** Never set: an entry is not itself a `StepExecutor`; a custom brain goes under `executor`. */
@@ -1358,10 +1357,16 @@ export interface FinishedRun {
   readonly projectRoot: string;
   /** Where `report.json` was written; undefined when the write failed or config never loaded. */
   readonly reportPath: string | undefined;
-  /** Absolute directory the report's artifact paths are relative to: `<output>/artifacts`. */
+  /** Absolute directory the report's artifact paths are relative to: `<output>/results`, a directory per test. */
   readonly artifactsRoot: string;
   /** Where `--ai-trace` wrote the run's model calls, when it was requested. */
   readonly aiTracePath: string | undefined;
+  /**
+   * The trace the runner wrote for each test that kept one (by its `trace`
+   * mode, a failed one by default), by report result id, as a path from the
+   * project root (`.e2e/results/checkout-applies-the-coupon-1a2b3c4d5e6f7a8b/trace.md`).
+   */
+  readonly traces: ReadonlyMap<string, string>;
   /**
    * The report `--last-failed` selected from, when the run was given that
    * flag: the run before this one, whose tests that did not fail were left
@@ -1417,16 +1422,17 @@ export interface E2EConfig {
   cleanupTimeout?: number;
   /** Retries per test, 0 through 10; default 1 in CI, else 0. */
   retries?: number;
-  /** Fail the run when a test skips itself after a soft failure or an earlier failed attempt; default false. */
+  /** Fail the run when a test skips a retry after an earlier failed attempt; default false. */
   failOnSkippedFailure?: boolean;
   /** Parallel workers, 1 through 1024; default 1 in CI, else half the cores. An engine may cap it lower. */
   workers?: number;
   /** `{ store }` hands every artifact to a host store as it is produced. */
   artifacts?: ArtifactsConfig;
   /**
-   * Which attempts record a trace; default `on`, `on-first-retry` in CI. A
-   * target's `trace` wins over it, `--trace [mode]` over both, and a test's
-   * own `trace` over all. Applies to the targets whose engine can trace.
+   * Which attempts keep a trace, a `trace.md` page in the test's directory
+   * under `<output>/results/` telling every step, the cache's decisions, what
+   * the app logged, and the screen at failure; default `retain-on-failure`. A target's `trace` wins
+   * over it, `--trace [mode]` over both, and a test's own `trace` over all.
    */
   trace?: RecordingMode;
   /**
@@ -1481,7 +1487,7 @@ export interface E2EConfig {
    * Named values the model must never see: API keys, tokens, anything sourced
    * from the environment. `secrets.get(name)` hands a test the opaque handle;
    * the value is filled by the runner, masked in every observation, and
-   * redacted from logs, traces, and the report.
+   * redacted from logs and the report.
    */
   secrets?: Readonly<Record<string, SecretConfig>>;
 }
