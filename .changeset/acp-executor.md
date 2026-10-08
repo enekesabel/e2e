@@ -2,4 +2,4 @@
 "@e2e-dev/acp": minor
 ---
 
-New package: `acpExecutor()` runs `agent.act` and `agent.assert` on a coding agent over the Agent Client Protocol (Claude Code, Codex, Cursor, or any agent with an ACP mode), signed in with the agent's own login. One agent session serves a test attempt; the action grammar reaches the agent as an MCP server on 127.0.0.1, every action goes through `ctx.actions`, and permission requests for anything but those tools are rejected.
+New package: run `agent.act` and `agent.assert` on your own coding agent over the Agent Client Protocol, signed in with the agent's own login. `acpExecutor.claudeCode()`, `.codex()`, and `.cursor()` start those agents with e2e's step tools as their only tools; `acpExecutor({ command, args })` starts any other ACP agent. Every action goes through the runner, so steps replay from the cache without the agent.
