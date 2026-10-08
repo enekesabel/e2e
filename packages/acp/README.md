@@ -22,8 +22,11 @@ export default {
 } satisfies E2EConfig;
 ```
 
-`acpExecutor.codex()` starts Codex; `acpExecutor({ command, args })` starts
-any other ACP agent, such as Cursor's `agent acp`.
+`acpExecutor.codex()` starts Codex once `@agentclientprotocol/codex-acp` is
+installed beside it. `acpExecutor({ command, args })` starts another ACP
+agent; its calls of the step tools are allowed only when its adapter names
+them the way the Claude Code and Codex adapters do, and fail the step
+otherwise.
 
 One agent session serves one test attempt. The agent gets the built-in
 agent's action tools for the verbs the target's engine supports, and

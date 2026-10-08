@@ -18,7 +18,7 @@ type Move =
   /** `on` picks the target id: the newest screen line that contains it. */
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
   | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
-  | { readonly ran: string; readonly kind?: string }
+  | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' }
   | { readonly say: string }
   | { readonly hang: true }
   | { readonly ignoreCancel: true };
@@ -130,7 +130,7 @@ const connection = new AgentSideConnection(
           // A tool of the agent's own that runs without asking.
           const toolCallId = `ran-${turn}-${move.ran}`;
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', toolCallId, title: move.ran, kind: (move.kind ?? 'read') as 'read', status: 'in_progress' } });
-          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' } });
+          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: move.status ?? 'completed' } });
           log({ ran: move.ran });
         } else if ('ignoreCancel' in move) {
           await new Promise<never>(() => undefined);
