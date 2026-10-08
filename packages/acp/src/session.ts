@@ -100,9 +100,12 @@ export async function startSession(
   signal.throwIfAborted();
   const cwd = mkdtempSync(join(tmpdir(), 'e2e-acp-'));
   let server: ToolServer | undefined;
+  // Started before anything can fail, so teardown can close it even when the startup race is lost while it binds.
+  const serving = serveTools(tools);
+  serving.catch(() => undefined);
   const child = spawn(launch.command, [...launch.args], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...inheritedEnv(), ...launch.env },
+    env: withoutSecrets({ ...process.env, ...launch.env }),
   });
   let stderr = '';
   child.stderr.on('data', (data: Buffer) => {
@@ -119,7 +122,7 @@ export async function startSession(
   exited.catch(() => undefined);
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new Error('the attempt ended while the agent was starting'));
+    onAbort = () => reject(new Error('the step ended while the agent was starting'));
     signal.addEventListener('abort', onAbort, { once: true });
   });
   aborted.catch(() => undefined);
@@ -143,7 +146,7 @@ export async function startSession(
     setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }, 3_000).unref();
-    void server?.close();
+    void serving.then((started) => started.close(), () => undefined);
     rmSync(cwd, { recursive: true, force: true });
   };
 
@@ -151,7 +154,7 @@ export async function startSession(
   let sessionId: string;
   let modelId: string | undefined;
   try {
-    server = await startup(serveTools(tools));
+    server = await startup(serving);
     initialize = await startup(
       connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
@@ -234,9 +237,9 @@ export async function startSession(
   };
 }
 
-/** This process's environment without the variables e2e reads secrets from. */
-function inheritedEnv(): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !SECRET_VARIABLE.test(name)));
+/** The agent's environment without the variables e2e reads secrets from, wherever they came from. */
+function withoutSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_VARIABLE.test(name)));
 }
 
 /** What an agent said about a refused request beyond its message, e.g. the Claude adapter's `data.details`. */
@@ -291,8 +294,9 @@ function observe(
       const { sessionUpdate: _, ...fields } = update;
       const call = { ...calls.get(update.toolCallId), ...defined(fields) };
       calls.set(update.toolCallId, call);
-      // A call of the agent's own that completed without a permission we rejected ran without asking.
-      const ran = call.status === 'completed' && !turn.own.rejected.has(update.toolCallId) && !turn.own.ran.has(update.toolCallId);
+      // A call of the agent's own that finished, done or failed, without a permission we rejected ran without asking.
+      const finished = call.status === 'completed' || call.status === 'failed';
+      const ran = finished && !turn.own.rejected.has(update.toolCallId) && !turn.own.ran.has(update.toolCallId);
       if (ran && !isOurs(call, undefined, ours)) {
         const title = titleOf(call);
         turn.own.ran.set(update.toolCallId, title);
