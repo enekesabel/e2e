@@ -31,6 +31,8 @@ export interface ActiveStep {
   readonly conclusion: VerdictTool;
   /** A runtime error a tool hit; the turn is cancelled and `runStep` rethrows it. */
   halted: unknown;
+  /** A tool of the agent's own that ran without asking; the turn is cancelled and the step fails. */
+  denied: string | undefined;
   /** Tool names in call order, for the transcript. */
   readonly calls: string[];
   /** The step's own action tools, built on its first look. */
@@ -39,7 +41,7 @@ export interface ActiveStep {
 
 /** The step a session starts serving, with nothing concluded yet. */
 export function activeStep(ctx: StepExecutorContext): ActiveStep {
-  return { ctx, conclusion: createVerdictTool(), halted: undefined, calls: [] };
+  return { ctx, conclusion: createVerdictTool(), halted: undefined, denied: undefined, calls: [] };
 }
 
 /** The verdict the agent concluded the step with, if it did. */
@@ -83,7 +85,7 @@ export function missingTools(active: ActiveStep, listed: readonly ServedTool[]):
 export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedTool[] {
   const current = (name: string): ActiveStep => {
     const active = slot.active;
-    if (active === undefined || active.conclusion.concluded() || active.halted !== undefined) {
+    if (active === undefined || active.conclusion.concluded() || active.halted !== undefined || active.denied !== undefined) {
       throw new Error('No step is active. Wait for the next instruction.');
     }
     active.calls.push(name);

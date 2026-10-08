@@ -1,8 +1,8 @@
 /**
  * How to start each agent with e2e's step tools as its only tools. ACP lets
  * a client add tools but not take the agent's own away, so each preset turns
- * them off the way its agent allows. The adapter runs from the project's
- * own install, never fetched by name at run time.
+ * them off the way its agent allows. The adapter runs from the install found
+ * from the working directory up, never fetched by name at run time.
  */
 
 import { execFile } from 'node:child_process';
@@ -45,8 +45,8 @@ export function claudeCodeLaunch(options: AcpAgentOptions): () => Promise<AgentL
  * Codex in its read-only mode with no shell, web search, apps, plugins,
  * browser or computer use, and the user's own MCP servers turned off by
  * name, as `codex mcp list` reports them. The adapter merges this over the
- * user's Codex config for its sessions only. Codex keeps its subagents, which
- * get the same tools.
+ * user's Codex config for its sessions only. Codex may still start a
+ * subagent, which fails the step like any tool of its own.
  */
 export function codexLaunch(options: AcpAgentOptions): () => Promise<AgentLaunch> {
   const pkg = adapterPackage('@agentclientprotocol/codex-acp');
@@ -70,18 +70,6 @@ export function codexLaunch(options: AcpAgentOptions): () => Promise<AgentLaunch
   };
 }
 
-/** Cursor's CLI, whose ACP mode is built in: `agent acp`. */
-export function cursorLaunch(options: AcpAgentOptions): () => Promise<AgentLaunch> {
-  const launch: AgentLaunch = {
-    command: 'agent',
-    args: ['acp'],
-    env: options.env,
-    model: options.model,
-    signIn: 'run `agent login`',
-  };
-  return async () => launch;
-}
-
 /** The Codex features that give the agent a tool of its own. */
 const CODEX_FEATURES_OFF = [
   'apps',
@@ -91,6 +79,7 @@ const CODEX_FEATURES_OFF = [
   'goals',
   'image_generation',
   'multi_agent',
+  'multi_agent_v2',
   'plugins',
   'shell_tool',
   'skill_search',
@@ -136,7 +125,10 @@ function adapterPackage(name: string): string {
     if (existsSync(join(candidate, 'package.json'))) return realpathSync(candidate);
     if (directory === parse(directory).root) break;
   }
-  throw new ConfigurationError('INVALID_CONFIG', `${name} is not installed in this project: npm install -D ${name}`);
+  throw new ConfigurationError(
+    'INVALID_CONFIG',
+    `${name} is not installed in ${process.cwd()} or a directory above it: npm install -D ${name}, and run e2e from that project`,
+  );
 }
 
 function adapterBin(name: string, bin: string): string {

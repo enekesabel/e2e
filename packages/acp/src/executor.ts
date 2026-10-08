@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AgentError, type JsonValue, type StepExecutor, type StepExecutorContext, type StepVerdict } from 'e2e';
 import { BASE_RULES, VERDICT_RULES } from 'e2e/agent';
 import { ConfigurationError } from 'e2e/engine';
-import { claudeCodeLaunch, codexLaunch, cursorLaunch } from './presets.ts';
+import { claudeCodeLaunch, codexLaunch } from './presets.ts';
 import type { Usage } from '@agentclientprotocol/sdk';
 import { startSession, type AcpSession, type AgentLaunch, type TurnReport } from './session.ts';
 import { activeStep, missingTools, openingScreen, stepTools, verdictOf, type ActiveStep, type StepSlot } from './tools.ts';
@@ -16,26 +16,30 @@ The rules below are for each step. A step ends when you call complete_step; then
 
 const RULES = `${SESSION_RULES}\n\n${BASE_RULES}\n\n${VERDICT_RULES}`;
 
+/** How long a step waits for the turn of a step the runner gave up on to stop. */
+const LAST_TURN_GRACE_MS = 5_000;
+
 interface Held {
   readonly session: Promise<AcpSession>;
   readonly slot: StepSlot;
   /** The tools the session lists, fixed for the attempt. */
   readonly tools: readonly ServedTool[];
   introduced: boolean;
+  /** The turn in flight, settled or not: one the runner gave up on may still be running. */
+  turn: Promise<unknown> | undefined;
 }
 
 /**
  * Builds a step executor that runs `agent.act` and `agent.assert` on any
  * ACP agent: one agent session per test attempt, started by its first agent
- * step and closed when the attempt ends. `acpExecutor.claudeCode()`,
- * `.codex()`, and `.cursor()` start those agents with the step tools as
- * their only tools.
+ * step and closed when the attempt ends. `acpExecutor.claudeCode()` and
+ * `.codex()` start those agents with the step tools as their only tools.
  */
 export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
   if (typeof options !== 'object' || options === null || typeof options.command !== 'string' || options.command === '') {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      "acpExecutor() takes { command, args }, e.g. acpExecutor({ command: 'agent', args: ['acp'] }), or use acpExecutor.claudeCode(), .codex(), or .cursor()",
+      "acpExecutor() takes { command, args }, e.g. acpExecutor({ command: 'agent', args: ['acp'] }), or use acpExecutor.claudeCode() or .codex()",
     );
   }
   const launch: AgentLaunch = {
@@ -56,9 +60,6 @@ acpExecutor.claudeCode = (options: AcpAgentOptions = {}): StepExecutor =>
 /** Codex through its adapter (`@agentclientprotocol/codex-acp`), signed in with your `codex` login. */
 acpExecutor.codex = (options: AcpAgentOptions = {}): StepExecutor => executor(options.name ?? 'codex', options, codexLaunch(options));
 
-/** Cursor's CLI (`agent`) in its ACP mode, signed in with your `agent` login. */
-acpExecutor.cursor = (options: AcpAgentOptions = {}): StepExecutor => executor(options.name ?? 'cursor', options, cursorLaunch(options));
-
 function executor(name: string, options: AcpAgentOptions, launch: () => Promise<AgentLaunch>): StepExecutor {
   // Where an attempt's session lives in `attempt.memory`: one key per executor, so two ACP agents never share a session.
   const memoryKey = `@e2e-dev/acp.session.${randomUUID()}`;
@@ -77,6 +78,11 @@ function executor(name: string, options: AcpAgentOptions, launch: () => Promise<
         if (error instanceof ConfigurationError) throw error;
         throw new AgentError('MODEL_PROVIDER_FAILED', `The ACP agent did not start: ${message(error)}`, { cause: error });
       }
+      if (!(await settled(held.turn, LAST_TURN_GRACE_MS))) {
+        session.close();
+        ctx.attempt.memory.delete(memoryKey);
+        throw new AgentError('MODEL_PROVIDER_FAILED', 'The ACP agent did not stop the turn of a step that already ended');
+      }
       const active = activeStep(ctx);
       const text = await stepMessage(active, held.tools, held.introduced ? undefined : [RULES, options.system, ctx.agentContext]);
       held.introduced = true;
@@ -85,38 +91,46 @@ function executor(name: string, options: AcpAgentOptions, launch: () => Promise<
       ctx.signal.addEventListener('abort', cancel, { once: true });
       let report: TurnReport;
       try {
-        report = await session.prompt(text);
+        const turn = session.prompt(text);
+        held.turn = turn;
+        report = await untilAborted(turn, ctx.signal);
       } catch (error) {
         ctx.signal.throwIfAborted();
         session.close();
         ctx.attempt.memory.delete(memoryKey);
         throw new AgentError('MODEL_PROVIDER_FAILED', `The ACP agent session failed: ${message(error)}`, { cause: error });
       } finally {
-        held.slot.active = undefined;
+        if (held.slot.active === active) held.slot.active = undefined;
         ctx.signal.removeEventListener('abort', cancel);
       }
       ctx.attachTranscript(transcript(text, active, report));
+      if (!ctx.signal.aborted) recordTurn(ctx, session, report);
       if (active.halted !== undefined) throw active.halted;
       ctx.signal.throwIfAborted();
-      const usage = report.usage;
-      ctx.budgets.recordModelCall({
-        startedAt: report.startedAt,
-        durationMs: report.durationMs,
-        ...(session.agentName === undefined ? {} : { provider: session.agentName }),
-        ...(session.modelId === undefined ? {} : { modelId: session.modelId }),
-        ...(usage === undefined
-          ? {}
-          : {
-              inputTokens: inputTokens(usage),
-              outputTokens: usage.outputTokens,
-              ...(usage.cachedReadTokens == null ? {} : { cacheReadTokens: usage.cachedReadTokens }),
-              ...(usage.cachedWriteTokens == null ? {} : { cacheWriteTokens: usage.cachedWriteTokens }),
-            }),
-        ...(report.costUsd === undefined ? {} : { estimatedCostUsd: report.costUsd }),
-      });
+      if (active.denied !== undefined) return ownToolUsed(active.denied);
       return verdictOf(active) ?? noConclusion(report);
     },
   };
+}
+
+/** Counts one prompt turn as one model call, with what the agent reported of it. */
+function recordTurn(ctx: StepExecutorContext, session: AcpSession, report: TurnReport): void {
+  const usage = report.usage;
+  ctx.budgets.recordModelCall({
+    startedAt: report.startedAt,
+    durationMs: report.durationMs,
+    ...(session.agentName === undefined ? {} : { provider: session.agentName }),
+    ...(session.modelId === undefined ? {} : { modelId: session.modelId }),
+    ...(usage === undefined
+      ? {}
+      : {
+          inputTokens: inputTokens(usage),
+          outputTokens: usage.outputTokens,
+          ...(usage.cachedReadTokens == null ? {} : { cacheReadTokens: usage.cachedReadTokens }),
+          ...(usage.cachedWriteTokens == null ? {} : { cacheWriteTokens: usage.cachedWriteTokens }),
+        }),
+    ...(report.costUsd === undefined ? {} : { estimatedCostUsd: report.costUsd }),
+  });
 }
 
 /** The attempt's session, started on its first step and closed when the attempt ends. */
@@ -127,12 +141,18 @@ function hold(ctx: StepExecutorContext, launch: () => Promise<AgentLaunch>, memo
   let closed = false;
   const slot: StepSlot = { active: undefined, halt: () => session?.cancel() };
   const tools = stepTools(slot, ctx);
+  const ownTool = (title: string) => {
+    if (slot.active === undefined) return;
+    slot.active.denied ??= title;
+    session?.cancel();
+  };
   const held: Held = {
     slot,
     tools,
     introduced: false,
+    turn: undefined,
     session: launch()
-      .then((how) => startSession(how, tools, ctx.attempt.signal))
+      .then((how) => startSession(how, tools, ctx.attempt.signal, ownTool))
       .then((started) => {
         session = started;
         if (closed) started.close();
@@ -217,6 +237,29 @@ function inputTokens(usage: Usage): number {
   return cacheApart ? usage.inputTokens + cached : usage.inputTokens;
 }
 
+/** Whether `promise` settles within `ms`; no promise has nothing to wait for. */
+async function settled(promise: Promise<unknown> | undefined, ms: number): Promise<boolean> {
+  if (promise === undefined) return true;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const done = promise.then(
+    () => true,
+    () => true,
+  );
+  return Promise.race([done, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** The verdict of a step where the agent acted with a tool of its own, which the runner neither saw nor recorded. */
+function ownToolUsed(title: string): StepVerdict {
+  return {
+    status: 'failed',
+    errorCode: 'POLICY_DENIED',
+    summary: `The agent ran a tool of its own without asking (${title}); only the step tools may act, so the step was stopped.`,
+  };
+}
+
 function noConclusion(report: TurnReport): StepVerdict {
   const said = report.text.trim().split('\n').at(-1)?.slice(0, 300);
   return {
@@ -230,7 +273,8 @@ function transcript(prompt: string, active: ActiveStep, report: TurnReport): str
   return [
     `> ${prompt}`,
     `tools: ${active.calls.join(', ') || 'none'}`,
-    ...(report.foreign.length === 0 ? [] : [`not ours (rejected when asked): ${report.foreign.join(', ')}`]),
+    ...(report.rejected.length === 0 ? [] : [`rejected tools of the agent's own: ${report.rejected.join(', ')}`]),
+    ...(report.ran.length === 0 ? [] : [`tools of the agent's own that ran without asking: ${report.ran.join(', ')}`]),
     `stop: ${report.stopReason}`,
     report.text,
   ].join('\n');

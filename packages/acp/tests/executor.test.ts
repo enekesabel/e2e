@@ -137,8 +137,9 @@ describe('acpExecutor', () => {
     expect(prompts[0]).toContain('Parameters: {"title":"Buy milk"}');
     expect(prompts[1]).not.toContain('end-to-end testing agent');
     expect(log().filter((entry) => 'session' in entry)).toHaveLength(1);
+    const pid = log().find((entry) => 'pid' in entry)?.['pid'] as number;
     first.end();
-    await vi.waitFor(() => expect(log()).toContainEqual({ closed: true }));
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 
   it('refuses actions that change the screen on an assertion, and lets it hover', async () => {
@@ -181,7 +182,42 @@ describe('acpExecutor', () => {
     cleanups.push(step.end);
     await executor.runStep(step.ctx);
     expect(log()).toContainEqual({ permission: 'Bash: ls ~', outcome: { outcome: 'selected', optionId: 'no' } });
-    expect(step.transcripts.join('\n')).toContain('not ours (rejected when asked): Bash: ls ~');
+    expect(step.transcripts.join('\n')).toContain("rejected tools of the agent's own: Bash: ls ~");
+  });
+
+  it('stops a step whose agent runs a tool of its own without asking, before it acts on what it read', async () => {
+    const { executor, log } = scripted([[{ ran: 'Read ~/.env', kind: 'read' }, { call: 'type', args: { target: 'n1', value: 'leaked' } }, pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    const verdict = await executor.runStep(step.ctx);
+    expect(verdict).toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED', summary: expect.stringContaining('Read ~/.env') });
+    expect(step.type).not.toHaveBeenCalled();
+    expect(log()).toContainEqual({ cancelled: true });
+    expect(step.transcripts.join('\n')).toContain("tools of the agent's own that ran without asking: Read ~/.env");
+  });
+
+  it('starts a step only once the turn of the step before it stopped', async () => {
+    const { executor, log } = scripted([[{ hang: true }], [pass]]);
+    const first = context();
+    cleanups.push(first.end);
+    const run = executor.runStep(first.ctx);
+    await vi.waitFor(() => expect(log().filter((entry) => 'prompt' in entry)).toHaveLength(1));
+    first.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(run).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+    const second = context({ attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    await expect(executor.runStep(second.ctx)).resolves.toMatchObject({ status: 'passed' });
+  });
+
+  it('gives up on a session whose agent never stops the turn of a step that ended', async () => {
+    const { executor } = scripted([[{ ignoreCancel: true }], [pass]]);
+    const first = context();
+    cleanups.push(first.end);
+    const run = executor.runStep(first.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    first.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(run).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+    const second = context({ attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    await expect(executor.runStep(second.ctx)).rejects.toMatchObject({ code: 'MODEL_PROVIDER_FAILED', message: expect.stringContaining('did not stop') });
   });
 
   it('allows only calls the adapter names as one of the step tools, never by text the agent wrote', async () => {
@@ -189,9 +225,10 @@ describe('acpExecutor', () => {
       // Ours, as the Claude adapter, an MCP approval's raw input, and an adapter title name them.
       { own: 'claude ours', meta: { claudeCode: { toolName: 'mcp__e2e_step__tap' } }, allowed: true },
       { own: 'codex ours', kind: 'execute', rawInput: { server: 'e2e_step', tool: 'tap', arguments: { target: 'n1' } }, meta: { is_mcp_tool_call: true }, allowed: true },
-      { own: 'mcp.e2e_step.tap', kind: 'other', allowed: true },
+      { own: 'subagent named e2e_step: tap', kind: 'think', rawInput: { server: 'e2e_step', tool: 'tap' }, allowed: false },
       { own: 'other ours', kind: 'other', rawInput: { serverName: 'e2e_step', toolName: 'tap' }, allowed: true },
-      { own: 'e2e_step: tap', kind: 'other', allowed: true },
+      // A title is text the agent may have written, so it allows nothing.
+      { own: 'e2e_step: tap', kind: 'other', allowed: false },
       // Not ours, though each names the step server.
       { own: 'claude Read', meta: { claudeCode: { toolName: 'Read' } }, allowed: false },
       { own: 'claude other server', meta: { claudeCode: { toolName: 'mcp__playwright__browser_navigate' } }, allowed: false },
@@ -248,6 +285,8 @@ describe('acpExecutor', () => {
     step.tap.mockRejectedValue(new AgentError('STEP_BUDGET_EXHAUSTED', 'the step used its 25 actions'));
     await expect(executor.runStep(step.ctx)).rejects.toMatchObject({ code: 'STEP_BUDGET_EXHAUSTED' });
     expect(log()).toContainEqual({ cancelled: true });
+    // The turn still counts, with what it cost.
+    expect(step.usage).toHaveLength(1);
   });
 
   it('reports a model the agent does not offer', async () => {
@@ -255,7 +294,7 @@ describe('acpExecutor', () => {
     const step = context();
     cleanups.push(step.end);
     await expect(executor.runStep(step.ctx)).rejects.toMatchObject({
-      code: 'MODEL_PROVIDER_FAILED',
+      code: 'INVALID_CONFIG',
       message: expect.stringContaining('does not offer model huge; it offers fast, slow'),
     });
   });

@@ -37,6 +37,12 @@ writes field values. See the shipped `docs/decision-models.mdx` or
 [the online guide](https://e2e.tester.army/docs/decision-models) for setup,
 gates, and limits.
 
+A coding agent the user already signs in to runs agent steps over ACP:
+install `@e2e-dev/acp` and its adapter, and put
+`acpExecutor.claudeCode({ model: 'sonnet' })` or `acpExecutor.codex()` under
+`executor`; no model provider is needed. See the shipped `docs/acp.mdx` or
+[the online guide](https://e2e.tester.army/docs/acp).
+
 - Pass a model instance, not a string (`INVALID_CONFIG`).
 - An agents entry is one plain object of `model`, `judge`, `system`,
   `context`, `tools`, `maxSteps`, `maxModelCalls`, `judgmentTimeout`,

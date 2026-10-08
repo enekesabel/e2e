@@ -257,7 +257,9 @@ a passed verdict with any code, is refused with `MODEL_OUTPUT_INVALID`.
 
 For a model your executor drives itself, `createVerdictTool()` from
 `e2e/agent` is the built-in agent's `complete_step`. Give the model its
-`tool` and `VERDICT_RULES`, then return `verdict()`.
+`tool` and `VERDICT_RULES`, then return `verdict()`. A grammar tool returns a
+`ScreenOutput`: text, or text with the screenshot. When a tool throws an
+error that `isRuntimeHardStop(error)` accepts, end the step and rethrow it.
 
 <CardGroup cols={2}>
   <Card title="agent reference" icon="wand-magic-sparkles" href="/reference/agent">
