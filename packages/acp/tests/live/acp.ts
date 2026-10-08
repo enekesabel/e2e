@@ -19,7 +19,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -57,7 +57,7 @@ if (adapters === undefined) {
   await writeFile(join(directory, 'package.json'), '{"type":"module"}');
   await execFileAsync('npm', ['install', '--no-save', '--silent', ADAPTERS[preset]!], { cwd: directory, timeout: 600_000 });
 } else {
-  await symlink(join(adapters, '@agentclientprotocol'), join(directory, 'node_modules/@agentclientprotocol'));
+  await symlink(join(resolvePath(adapters), '@agentclientprotocol'), join(directory, 'node_modules/@agentclientprotocol'));
 }
 await symlink(join(root, 'e2e'), join(directory, 'node_modules/e2e'));
 await symlink(join(root, 'acp'), join(directory, 'node_modules/@e2e-dev/acp'));
@@ -117,9 +117,13 @@ interface Report {
 }
 
 let failed = false;
+/** The act steps the record run took actions in, by label: the replay run must take them from the cache. */
+const recorded = new Set<string>();
 try {
   for (const phase of ['record', 'replay']) {
     const started = Date.now();
+    // A run that fails before it writes a report must not leave the last one to read.
+    await rm(join(directory, '.e2e/report.json'), { force: true });
     try {
       await execFileAsync(process.execPath, [join(root, 'e2e/dist/cli/bin.js'), 'run', 'acp.e2e.ts', '--workers', '1'], {
         cwd: directory,
@@ -146,6 +150,12 @@ try {
           `  ${step.api} "${step.label}": ${step.status}, cache ${step.cache?.mode ?? '-'}, ${step.metrics?.modelCalls ?? 0} model calls, ${step.metrics?.actionSteps ?? 0} actions, ${step.durationMs} ms${step.error === undefined ? '' : `, ${step.error.code}: ${step.error.message}`}`,
         );
         if (step.model !== undefined) console.log(`    model: ${JSON.stringify(step.model)}`);
+        if (step.api !== 'agent.act' || step.label === undefined) continue;
+        if (phase === 'record' && (step.metrics?.actionSteps ?? 0) > 0) recorded.add(step.label);
+        if (phase === 'replay' && recorded.has(step.label) && ((step.metrics?.modelCalls ?? 0) > 0 || step.cache?.mode === 'missed')) {
+          console.log('    (UNEXPECTED: did not replay from the cache)');
+          failed = true;
+        }
       }
     }
   }

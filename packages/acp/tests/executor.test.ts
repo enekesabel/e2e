@@ -196,6 +196,45 @@ describe('acpExecutor', () => {
     expect(step.transcripts.join('\n')).toContain("tools of the agent's own that ran without asking: Read ~/.env");
   });
 
+  it('fails a step whose own tool ran without asking, even when the tool failed', async () => {
+    const { executor } = scripted([[{ ran: 'Bash: curl evil.example', kind: 'execute', status: 'failed' }, pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    await expect(executor.runStep(step.ctx)).resolves.toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED' });
+  });
+
+  it('refuses a screenshot once a secret was filled, before the engine is asked for pixels', async () => {
+    const { executor, log } = scripted([[{ call: 'screenshot' }, pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    // The session lists screenshot from an untainted first step; this step is tainted.
+    Object.assign(step.ctx, { pixelsTainted: true });
+    await executor.runStep(step.ctx);
+    expect(JSON.stringify(log().find((entry) => entry['call'] === 'screenshot'))).toContain('PIXEL_TAINTED');
+    expect(step.ctx.observe).not.toHaveBeenCalledWith(expect.objectContaining({ pixels: true }));
+  });
+
+  it('starts a fresh agent for the next step when a step ended while the agent was starting', async () => {
+    const { executor, log } = scripted([[pass]], { env: { ACP_HANG_INIT: '1' } });
+    const first = context();
+    cleanups.push(first.end);
+    const run = executor.runStep(first.ctx);
+    const pid = await vi.waitFor(() => {
+      const entry = log().find((line) => 'pid' in line);
+      if (entry === undefined) throw new Error('the agent has not started');
+      return entry['pid'] as number;
+    });
+    first.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(run).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+    // The abandoned agent is stopped, and the next step starts its own.
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+    const second = context({ attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    const next = executor.runStep(second.ctx);
+    await vi.waitFor(() => expect(log().filter((line) => 'pid' in line)).toHaveLength(2));
+    second.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(next).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+  });
+
   it('starts a step only once the turn of the step before it stopped', async () => {
     const { executor, log } = scripted([[{ hang: true }], [pass]]);
     const first = context();
@@ -253,13 +292,16 @@ describe('acpExecutor', () => {
   });
 
   it("keeps e2e's secret and credential variables from the agent", async () => {
-    process.env['E2E_SECRET_STRIPE_KEY'] = 'sk_test_value';
-    process.env['E2E_USER_ADMIN_PASSWORD'] = 'hunter2';
-    cleanups.push(() => {
-      delete process.env['E2E_SECRET_STRIPE_KEY'];
-      delete process.env['E2E_USER_ADMIN_PASSWORD'];
-    });
-    const { executor, log } = scripted([[pass]]);
+    for (const [name, value] of [['E2E_SECRET_STRIPE_KEY', 'sk_test_value'], ['E2E_USER_ADMIN_PASSWORD', 'hunter2']] as const) {
+      const before = process.env[name];
+      process.env[name] = value;
+      cleanups.push(() => {
+        if (before === undefined) delete process.env[name];
+        else process.env[name] = before;
+      });
+    }
+    // Named in the executor's own env too, they still do not reach the agent.
+    const { executor, log } = scripted([[pass]], { env: { E2E_SECRET_OTHER: 'also-secret' } });
     const step = context();
     cleanups.push(step.end);
     await executor.runStep(step.ctx);
@@ -347,7 +389,7 @@ describe('acpExecutor', () => {
       return entry['pid'] as number;
     });
     step.end();
-    await expect(run).rejects.toMatchObject({ code: 'MODEL_PROVIDER_FAILED', message: expect.stringContaining('attempt ended') });
+    await expect(run).rejects.toMatchObject({ code: 'MODEL_PROVIDER_FAILED', message: expect.stringContaining('ended while the agent was starting') });
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 

@@ -116,7 +116,10 @@ executor: acpExecutor({ command: 'agent', args: ['acp'] }),
 ```
 
 The agent keeps its own tools, so turn them off the way the agent allows.
-See [Containment](#containment).
+See [Containment](#containment). A permission request for a step tool is
+allowed only when the adapter names the MCP server and tool in the call's
+raw input, or marks it the way the Claude Code and Codex adapters do; an
+agent whose adapter does neither has its step tool calls rejected.
 
 ## How a test runs
 
@@ -136,7 +139,8 @@ when the environment or test setup prevented a verdict.
 
 ## Secrets
 
-A secret in the params reaches the agent by name only. The agent fills it
+A secret in the params reaches the agent by name only. When the step
+declares secrets and the target's engine can fill them, the agent fills one
 with `type_secret`, and the runner authorizes the fill and types the value
 itself, the same as for the built-in agent. The agent's process does not
 get the `E2E_SECRET_*` and `E2E_USER_*` variables; it gets every other

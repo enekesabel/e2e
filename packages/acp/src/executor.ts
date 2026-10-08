@@ -73,8 +73,9 @@ function executor(name: string, options: AcpAgentOptions, launch: () => Promise<
       try {
         session = await untilAborted(held.session, ctx.signal);
       } catch (error) {
-        ctx.signal.throwIfAborted();
+        // The next step starts a fresh agent rather than wait on this one.
         ctx.attempt.memory.delete(memoryKey);
+        ctx.signal.throwIfAborted();
         if (error instanceof ConfigurationError) throw error;
         throw new AgentError('MODEL_PROVIDER_FAILED', `The ACP agent did not start: ${message(error)}`, { cause: error });
       }
@@ -152,7 +153,8 @@ function hold(ctx: StepExecutorContext, launch: () => Promise<AgentLaunch>, memo
     introduced: false,
     turn: undefined,
     session: launch()
-      .then((how) => startSession(how, tools, ctx.attempt.signal, ownTool))
+      // The first step's end stops a startup still in progress; an open session lives until the attempt ends.
+      .then((how) => startSession(how, tools, AbortSignal.any([ctx.attempt.signal, ctx.signal]), ownTool))
       .then((started) => {
         session = started;
         if (closed) started.close();
