@@ -320,6 +320,16 @@ describe('acpExecutor', () => {
     expect(verdict.summary).toContain('I could not find the button.');
   });
 
+  it('reports what the agent said about a turn it failed', async () => {
+    const { executor } = scripted([[{ fail: 'Quota exceeded. Check your plan and billing details.' }]]);
+    const step = context();
+    cleanups.push(step.end);
+    await expect(executor.runStep(step.ctx)).rejects.toMatchObject({
+      code: 'MODEL_PROVIDER_FAILED',
+      message: expect.stringContaining('Internal error: Quota exceeded.'),
+    });
+  });
+
   it('rethrows a runtime error a tool hit, after cancelling the turn', async () => {
     const { executor, log } = scripted([[{ call: 'tap', args: { target: 'n2' } }, { hang: true }]]);
     const step = context();

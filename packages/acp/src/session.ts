@@ -193,9 +193,7 @@ export async function startSession(
     if (isAuthRequired(error)) {
       throw new Error(`the agent is not signed in${launch.signIn === undefined ? '' : `: ${launch.signIn}`}`, { cause: error });
     }
-    const details = detailsOf(error);
-    if (details !== undefined) throw new Error(`${error instanceof Error ? error.message : String(error)}: ${details}`, { cause: error });
-    throw error;
+    throw withDetails(error);
   } finally {
     if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
   }
@@ -209,7 +207,9 @@ export async function startSession(
       turn.own = { rejected: new Map(), ran: new Map() };
       const costBefore = turn.cost;
       const started = Date.now();
-      const response = await Promise.race([connection.prompt({ sessionId, prompt: [{ type: 'text', text }] }), exited]);
+      const response = await Promise.race([connection.prompt({ sessionId, prompt: [{ type: 'text', text }] }), exited]).catch((error: unknown) => {
+        throw withDetails(error);
+      });
       const costUsd = turn.cost === undefined ? undefined : turn.cost - (costBefore ?? 0);
       return {
         startedAt: new Date(started).toISOString(),
@@ -242,10 +242,17 @@ function withoutSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_VARIABLE.test(name)));
 }
 
-/** What an agent said about a refused request beyond its message, e.g. the Claude adapter's `data.details`. */
+/** `error` with what the agent said about it beyond its message appended, if anything. */
+function withDetails(error: unknown): unknown {
+  const details = detailsOf(error);
+  return details === undefined ? error : new Error(`${error instanceof Error ? error.message : String(error)}: ${details}`, { cause: error });
+}
+
+/** What an agent said about a refused request beyond its message: the Claude adapter's `data.details`, the Codex adapter's `data.message`. */
 function detailsOf(error: unknown): string | undefined {
   const data = typeof error === 'object' && error !== null ? (error as { data?: unknown }).data : undefined;
-  const details = typeof data === 'object' && data !== null ? (data as { details?: unknown }).details : data;
+  const fields = typeof data === 'object' && data !== null ? (data as { details?: unknown; message?: unknown }) : undefined;
+  const details = fields === undefined ? data : (fields.details ?? fields.message);
   return typeof details === 'string' && details !== '' ? details : undefined;
 }
 

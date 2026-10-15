@@ -3,7 +3,8 @@
  * with one entry per prompt turn, or an object keyed by text the prompt
  * contains, each a list of moves: call one of the
  * client's MCP tools, ask permission for a tool of the agent's own, run one
- * without asking, say something, or hang until cancelled or for good. Every prompt and tool result is appended to `ACP_LOG` as JSON
+ * without asking, say something, fail the turn with a message in the error's
+ * data, or hang until cancelled or for good. Every prompt and tool result is appended to `ACP_LOG` as JSON
  * lines, with the tool list the session saw, and the `E2E_` variables and
  * `CODEX_CONFIG` it started with. `ACP_USAGE` is the usage each turn reports. With `ACP_HANG_INIT` set, the agent never
  * answers `initialize`.
@@ -11,7 +12,7 @@
 
 import { appendFileSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
-import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, type McpServer, type Usage } from '@agentclientprotocol/sdk';
+import { AgentSideConnection, ndJsonStream, PROTOCOL_VERSION, RequestError, type McpServer, type Usage } from '@agentclientprotocol/sdk';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 type Move =
@@ -20,6 +21,7 @@ type Move =
   | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
   | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' }
   | { readonly say: string }
+  | { readonly fail: string }
   | { readonly hang: true }
   | { readonly ignoreCancel: true };
 
@@ -108,6 +110,8 @@ const connection = new AgentSideConnection(
       for (const move of movesFor(text, turn++)) {
         if ('say' in move) {
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: move.say } } });
+        } else if ('fail' in move) {
+          throw RequestError.internalError({ message: move.fail });
         } else if ('own' in move) {
           const toolCall = {
             toolCallId: `own-${turn}-${move.own}`,
