@@ -28,6 +28,8 @@ export type AgentObservation = AgentObservationMetadata & (
       readonly parents: ReadonlyMap<string, string>;
       readonly tree: RedactedNode;
       readonly truncated: boolean;
+      /** The engine's measured keyboard state; `false` when it measured none, absent only when it did not measure. */
+      readonly keyboardVisible?: boolean | undefined;
       readonly pixels?: ExecutorPixels | undefined;
       readonly pixelsWithheld?: PixelsWithheld | undefined;
     }
@@ -147,6 +149,7 @@ export function prepareObservation(
     parents,
     tree,
     truncated,
+    ...(observation.keyboardVisible === undefined ? {} : { keyboardVisible: observation.keyboardVisible }),
     ...(pixels.cleared === undefined ? {} : { pixels: pixels.cleared }),
     ...(pixels.withheld === undefined ? {} : { pixelsWithheld: pixels.withheld }),
   };
@@ -223,6 +226,7 @@ export function redactNode(node: SemanticNode, redaction: NodeRedaction): Redact
     if (result !== undefined) redacted[field] = result;
   }
   if (node.children !== undefined) redacted['children'] = node.children.map((child) => redactNode(child, redaction));
+  // oxlint-disable-next-line e2e/no-chained-type-assertions -- mints the phantom REDACTED brand once every field passed NODE_FIELDS
   return redacted as unknown as RedactedNode;
 }
 

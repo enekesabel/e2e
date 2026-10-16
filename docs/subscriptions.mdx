@@ -2,11 +2,12 @@
 title: Subscriptions
 description: Use your ChatGPT, GitHub Copilot, OpenCode Console, or SuperGrok subscription, or your Claude Max or Team plan's API credits, for agent steps.
 icon: "id-card"
+"og:image": "https://e2e.tester.army/docs/images/og/subscriptions.png?v=174d49a0e9"
+"twitter:image": "https://e2e.tester.army/docs/images/og/subscriptions.png?v=174d49a0e9"
 ---
 
-Use a plan that you already pay for to run agent steps. Claude Max and Team
-can connect with an API key. Those calls consume API credits instead of
-subscription usage limits.
+Run agent steps on a plan you already pay for. Sign in one time, then use
+the plan's model in `e2e.config.ts`.
 
 | Plan | How to connect |
 | --- | --- |
@@ -14,15 +15,13 @@ subscription usage limits.
 | GitHub Copilot | `npx e2e login github-copilot` |
 | OpenCode Console (OpenCode Zen and OpenCode Go) | `npx e2e login opencode-console` |
 | SuperGrok or X Premium+ | `npx e2e login spacexai` |
-| Claude Max or Team (Claude Code) | API key from the plan's monthly API credits |
+| Claude Max or Team (Claude Code) | API key, paid from the plan's monthly API credits, not its usage limits |
 
 ## Set up
 
-For a new project, run `e2e init` and select your plan. See the
-[quickstart](/quickstart).
-
-For an existing project, select your plan below. Install the packages, sign
-in, and set the model as `agents: { default: agent }` in `e2e.config.ts`.
+For a new project, run `e2e init` and select your plan
+([quickstart](/quickstart)). For an existing project, install the packages,
+sign in, and set `agents: { default: agent }` in `e2e.config.ts`.
 
 <Tabs>
   <Tab title="ChatGPT">
@@ -72,6 +71,8 @@ import { copilot } from 'e2e/oauth/copilot';
 
 const agent = { model: copilot('claude-sonnet-5') };
 ```
+
+Which models your plan serves is up to GitHub; see [Pick a model](#pick-a-model).
   </Tab>
   <Tab title="OpenCode Console">
 <CodeGroup>
@@ -99,6 +100,10 @@ const agent = { model: opencodeConsole('deepseek-v4.1-flash') };
 // OpenCode Go, billed to your Go subscription
 const goAgent = { model: opencodeConsole('go/deepseek-v4.1-flash') };
 ```
+
+On the Anthropic route, a call that sets no `maxOutputTokens` asks for 8192: the
+Anthropic SDK does not know the ids OpenCode serves there, and on its own it
+limits the request to 4096 tokens and only warns.
   </Tab>
   <Tab title="SuperGrok">
 <CodeGroup>
@@ -125,14 +130,14 @@ const agent = { model: grok('grok-4') };
 ```
   </Tab>
   <Tab title="Claude Max or Team">
-Claude plans have no sign-in for other apps. Max and Team plans include
-monthly API credits. Use them with an API key. For a new project, select
-`None` for the model gateway in `e2e init`, then do these steps:
+Claude plans have no sign-in for other apps. For a new project, select
+`None` for the model gateway in `e2e init`. Then:
 
 1. In claude.ai, link a Claude Console organization. On Max, go to
    Settings > Billing. On Team, an Owner or Primary Owner goes to
    Organization settings > Billing. See [Anthropic's guide](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans).
-2. In that organization, create an API key and set it as `ANTHROPIC_API_KEY`.
+2. In that organization, create an API key. Set it as `ANTHROPIC_API_KEY`.
+3. Install the packages and set the model:
 
 <CodeGroup>
 ```bash npm
@@ -154,17 +159,17 @@ import { anthropic } from '@ai-sdk/anthropic';
 const agent = { model: anthropic('claude-sonnet-5-5') };
 ```
 
-Set `agents: { default: agent }` in `e2e.config.ts`. Unused credits expire
-at the end of each billing cycle.
+Set `agents: { default: agent }` in `e2e.config.ts`.
 
-Other Claude plans have no API credits. On those plans, use an
-[API provider](/models) or a Claude model through your Copilot plan.
+Unused credits expire at the end of each billing cycle. Other Claude plans
+have no API credits. On those, use an [API provider](/models), or a Claude
+model through your Copilot plan.
   </Tab>
 </Tabs>
 
 ## Pick a model
 
-To see the model ids that your login can use, run `e2e models`:
+`e2e models` lists the model ids your login can use:
 
 <CodeGroup>
 ```bash npm
@@ -183,44 +188,61 @@ bunx e2e models openai     # one provider
 ```
 </CodeGroup>
 
-The id is not always the name that the vendor's app shows.
+The id is not always the name the vendor's app shows.
 
-- **Copilot** marks models that `copilot()` cannot call. `not enabled`: turn
-  the model on in your Copilot settings on GitHub, or ask your organization
-  admin if they manage your seat. `no chat or responses`: use a different
-  model.
-- **OpenCode Console** ids without a prefix are Zen models, paid from the
-  workspace's credits. Ids with `go/` are Go models, paid from the Go
-  subscription, and listed only if you have it. The list leaves out models
-  your workspace turned off and Zen's free models. Set `providerOptions`
-  under `opencode` for chat completions models, and under `openai`,
-  `anthropic`, or `google` for the others.
+With `OPENCODE_API_KEY` set, `e2e models opencode-console` lists the ids that
+key serves, the same key `opencodeConsole()` uses in place of the login.
+
+- **Copilot** marks `not enabled` (turn the model on in your Copilot
+  settings on GitHub, or ask the admin who manages your seat) and `no chat
+  or responses` (use a different model). It can't see what your plan
+  serves: on Copilot Free, GitHub serves models through
+  [auto model selection only](https://docs.github.com/en/copilot/get-started/plans),
+  so a model called by id is usually refused. The run then stops with
+  `MODEL_UNAVAILABLE` naming it; pick another id or an
+  [API provider](/models).
+- **OpenCode Console** lists `go/` models only if you have Go. It leaves out
+  models your workspace turned off, and Zen's free models. Key
+  `providerOptions` by `opencode` for chat completions models, else by
+  `openai`, `anthropic`, or `google`.
 
 ## Sign-in help
 
 - ChatGPT opens a browser. To use a device code, add `--device`.
-- Copilot uses your GitHub CLI login. Without `gh`, give `--client-id` for
-  your own GitHub OAuth app with device flow enabled. For GitHub Enterprise, add `--enterprise-url`.
+- Copilot uses your GitHub CLI login. Without `gh`, pass `--client-id` with
+  your own GitHub OAuth app that has device flow on. For GitHub Enterprise,
+  add `--enterprise-url`.
 - OpenCode Console shows a device code. Approve it and select the
-  workspace. The page shows e2e as an unknown client. To change the workspace, run `npx e2e logout opencode-console`
-  and sign in again.
+  workspace. The page shows e2e as an unknown client. To change the
+  workspace, run `npx e2e logout opencode-console` and sign in again.
 - SuperGrok shows a device code and the URL where you enter it.
 
-Run `npx e2e login` to see the accounts that are signed in. Run
-`npx e2e logout` to remove a login. If a saved login stops working, the step
-fails with `MODEL_PROVIDER_FAILED`, and the message shows the
-`npx e2e login <provider>` command to run.
+`npx e2e login` with no provider opens a picker that shows which accounts
+are signed in. `npx e2e logout` removes a login. When a saved login stops
+working, the step fails with `MODEL_PROVIDER_FAILED`, and the message gives
+the `npx e2e login <provider>` command to run. See the
+[CLI reference](/reference/cli#e2e-login) for every flag.
+
+Model-call cancellation also applies while waiting for a token refresh.
 
 ## CI
 
-Use API keys in CI:
-
-- Claude Max or Team: set `ANTHROPIC_API_KEY`.
-- OpenCode Console: create a service account API key in the Console
-  (Service Accounts, then API Keys) and set it as `OPENCODE_API_KEY`.
-- ChatGPT, Copilot, and SuperGrok: use an [API provider](/models).
+Use API keys in CI. Claude Max or Team already uses one. For OpenCode
+Console, set `OPENCODE_API_KEY` to an OpenCode Go subscription API key, or to
+a service account API key created in the Console (Service Accounts, then API
+Keys). For ChatGPT, Copilot, and SuperGrok, use an [API provider](/models).
 
 [`E2E_OAUTH_CREDENTIALS`](/reference/environment) can give a stored login to
-CI, but e2e does not save refreshed tokens back to it. A login with a
-rotating refresh token works there only for a limited time. For all
-sign-in flags, see the [CLI reference](/reference/cli#e2e-login).
+CI, but e2e doesn't save refreshed tokens back to it. A login with a
+rotating refresh token works there only for a limited time.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Models" icon="brain" href="/models">
+    Use an API key, a gateway, or a local model instead.
+  </Card>
+  <Card title="Agents and personas" icon="users" href="/agents">
+    Give tests different models and instructions.
+  </Card>
+</CardGroup>

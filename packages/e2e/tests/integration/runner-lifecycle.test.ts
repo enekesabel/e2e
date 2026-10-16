@@ -780,6 +780,79 @@ test('after the group too', async () => {});
   );
 
   it(
+    'stops at maxDuration: the running test is interrupted, the rest skipped, RUN_TIMEOUT recorded, exit 1, and --last-failed runs them next',
+    async () => {
+      const sleeping = `import { test } from 'e2e';
+test('sleeps past the limit', async () => {
+  await new Promise((resolve) => setTimeout(resolve, 60_000));
+});
+`;
+      const project = createProject({
+        'tests/first.e2e.ts': sleeping,
+        'tests/second.e2e.ts': `import { test } from 'e2e';
+test('never started', async () => {});
+test('never started either', async () => {});
+`,
+        'e2e.config.ts': workerFakeConfigSource(1, '\n  maxDuration: 600_000,'),
+      });
+      const startedAt = Date.now();
+      // The flag's value wins over the config's ten minutes.
+      const stopped = await runExistingWithConfigFile(project, { runOptions: { maxDuration: 2_000 } });
+      expect(Date.now() - startedAt).toBeLessThan(60_000);
+      expect(stopped.exitCode).toBe(1);
+      expect(stopped.status).toBe('failed');
+      expect(stopped.report.run.summary).toMatchObject({ selected: 3, passed: 0, failed: 0, interrupted: 1, skipped: 2 });
+      expect(resultByTitle(stopped, 'sleeps past the limit').status).toBe('interrupted');
+      expect(resultByTitle(stopped, 'sleeps past the limit').attempts.at(-1)?.error?.message).toBe(
+        'run interrupted in phase body: run stopped at its time limit of 2000 ms (--max-duration)',
+      );
+      for (const title of ['never started', 'never started either']) {
+        expect(resultByTitle(stopped, title).skip).toEqual({ cause: 'time-limit', reason: 'run stopped at its time limit of 2000 ms (--max-duration)' });
+      }
+      expect(stopped.report.run.errors.map((error) => [error.code, error.category])).toEqual([['RUN_TIMEOUT', 'test']]);
+      assertValidReport(stopped.report);
+
+      // The config's own maxDuration stops the run with no flag.
+      writeFileSync(path.join(project.dir, 'e2e.config.ts'), workerFakeConfigSource(1, '\n  maxDuration: 2_000,'));
+      const configStopped = await runExistingWithConfigFile(project, {});
+      expect(configStopped.exitCode).toBe(1);
+      expect(configStopped.report.run.errors.map((error) => [error.code, error.message])).toEqual([
+        ['RUN_TIMEOUT', 'run stopped at its time limit of 2000 ms (maxDuration): the running tests end as interrupted, the rest are skipped'],
+      ]);
+      expect(resultByTitle(configStopped, 'sleeps past the limit').status).toBe('interrupted');
+      expect(resultByTitle(configStopped, 'sleeps past the limit').attempts.at(-1)?.error?.message).toBe(
+        'run interrupted in phase body: run stopped at its time limit of 2000 ms (maxDuration)',
+      );
+      for (const title of ['never started', 'never started either']) {
+        expect(resultByTitle(configStopped, title).skip?.cause).toBe('time-limit');
+      }
+
+      writeFileSync(path.join(project.dir, 'tests', 'first.e2e.ts'), sleeping.replace('setTimeout(resolve, 60_000)', 'setTimeout(resolve, 0)'));
+      const rerun = await runExistingWithConfigFile(project, { runOptions: { lastFailed: true } });
+      expect(rerun.exitCode).toBe(0);
+      const rerunRows = rerun.results.map((result) => [result.test.title, result.selected, result.status] as const);
+      expect(rerunRows.toSorted(([a], [b]) => a.localeCompare(b))).toEqual([
+        ['never started', true, 'passed'],
+        ['never started either', true, 'passed'],
+        ['sleeps past the limit', true, 'passed'],
+      ]);
+
+      const invalid = await runExistingWithConfigFile(project, { runOptions: { maxDuration: 0 } });
+      expect(invalid.exitCode).toBe(2);
+      expect(invalid.report.run.errors.map((error) => [error.code, error.message])).toEqual([
+        ['INVALID_CONFIG', 'maxDuration must be a positive safe integer of milliseconds, got 0'],
+      ]);
+      const tooLong = await runExistingWithConfigFile(project, { runOptions: { maxDuration: 2 ** 31 } });
+      expect(tooLong.exitCode).toBe(2);
+      expect(tooLong.report.run.errors.map((error) => [error.code, error.message])).toEqual([
+        ['INVALID_CONFIG', 'maxDuration must be at most 2147483647 milliseconds, got 2147483648'],
+      ]);
+      project.cleanup();
+    },
+    120_000,
+  );
+
+  it(
     'an interrupt reports every test it never started, and --last-failed runs them next',
     async () => {
       const sleeping = `import { test } from 'e2e';

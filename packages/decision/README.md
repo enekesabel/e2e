@@ -4,7 +4,9 @@ Run `agent.act` and `agent.assert` through a decision model instead of an
 LLM. Any AI SDK decision model that answers `choice` questions with
 probability distributions works, such as TypeSafe Jev or OpenAI `gpt-6-luna`
 through `@ai-sdk/openai` 4.0.90 or later. A small language model writes
-field values and upload paths. Needs `ai` 7.0.134 or later.
+field values and upload paths. Needs `ai` 7.0.134 or later. An answer with
+no distribution, as a gateway fallback to a language model returns, counts
+as a committed choice with probability 1 and confidence 0.
 
 ```ts
 import type { E2EConfig } from 'e2e';
@@ -28,8 +30,9 @@ Tests stay plain natural language, with no params. Each turn asks the
 operation, then the target for it. Every operation the engine declares is
 offered, and every target question carries a `none` option. With
 `vision: true` and a model that takes images, such as
-`openai.decisionModel('gpt-6-luna')`, verdicts see a masked screenshot and
-`tap_at` reaches a drawn control. The runner authorizes every action and
+`typeSafeAi.decisionModel('jev-latest')` with `@ai-sdk/typesafe-ai` 3.0.19
+or later, verdicts see a masked screenshot and
+`tap_at` and `type_at` reach a drawn control or field. The runner authorizes every action and
 records every model call against the step budget. Secrets stay declared
 handles that only `typeSecret` fills.
 

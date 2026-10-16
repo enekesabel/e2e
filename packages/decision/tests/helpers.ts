@@ -51,7 +51,7 @@ export function scriptedDecision(resolve: (id: string, keys: string[], call: num
         const high = Math.min(levels.length - 1, low + 1);
         const weightHigh = score - low;
         const probabilities = answer.probabilities ?? Object.fromEntries(levels.map((level) => [level, level === String(low) ? 1 - weightHigh : level === String(high) ? weightHigh : 0]));
-        answers[id] = { type: 'score', score, probabilities };
+        answers[id] = answer.bare === true ? ({ type: 'score', score } as (typeof answers)[string]) : { type: 'score', score, probabilities };
         if (answer.confidence !== undefined) confidence[id] = answer.confidence;
         continue;
       }
@@ -81,6 +81,11 @@ export function scriptedDecision(resolve: (id: string, keys: string[], call: num
   };
   const model: AcceptedModel = options?.legacy === true ? { ...base, doEvaluate: respond } : { ...base, doDecide: respond };
   return { model, requests };
+}
+/** Answers in order, then `last` forever: a script keyed to how many times one question was asked, not to the decide call count. */
+export function inTurn(answers: readonly string[], last: string): () => string {
+  let asked = 0;
+  return () => answers[asked++] ?? last;
 }
 /** A scripted language model: returns queued texts as JSON through real generateText. */
 export function scriptedText(texts: (string | null)[]): { model: Exclude<LanguageModel, string>; prompts: unknown[] } {
@@ -155,7 +160,7 @@ export function context(options: {
   const ctx: StepExecutorContext = {
     step: { kind: options.kind ?? 'act', index: 0, instruction: 'Do the thing', params: options.params, secrets: options.secrets ?? [{ name: 'password', purpose: 'password' }], ...(options.vision === undefined ? {} : { vision: options.vision }) },
     attempt: { testId: 'test', attemptId: 'attempt', index: 0, signal, memory: new Map() },
-    signal, target: { name: 'web', platform: 'web', verbs: new Set(options.verbs ?? (Object.keys(actions) as (keyof ExecutorActions)[])) },
+    signal, target: { name: 'web', platform: 'web', verbs: new Set(options.verbs ?? (Object.keys(actions) as (keyof ExecutorActions)[])), tapModifiers: false },
     model: options.model as StepExecutorContext['model'], providerOptions: undefined,
     ledger: options.ledger ?? '', agentContext: undefined,
     actions, observe, pixelsTainted: options.pixelsTainted ?? false,

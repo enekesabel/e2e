@@ -437,7 +437,7 @@ export interface Screen {
   getByText(text: TextMatch, options?: TextMatchOptions): Locator;
   /** Creates a lazy displayed-value query. */
   getByDisplayValue(value: TextMatch, options?: TextMatchOptions): Locator;
-  /** Creates a lazy test-id query: a string matches the whole id, case-sensitive; a RegExp tests it. */
+  /** Creates a lazy test-id query: a string matches the whole id, case-sensitive; a RegExp tests it. An engine may also match an id without its platform's namespacing. */
   getByTestId(id: TextMatch, options?: { visible?: boolean }): Locator;
   /** Taps a viewport point, with no node behind it. */
   tapAt(point: Point, options?: ActionOptions): Promise<void>;
@@ -497,7 +497,7 @@ export interface Locator extends Screen {
   scrollIntoView(options?: ActionOptions): Promise<void>;
   /** Performs a swipe scoped to exactly one node. */
   swipe(options: SwipeOptions & ActionOptions): Promise<void>;
-  /** Reads normalized text without retrying for a particular value. */
+  /** Reads normalized text once a match exists, without retrying for a particular value. */
   textContent(): Promise<string | null>;
   /** Reads the current input value. */
   inputValue(): Promise<string>;
@@ -1021,6 +1021,12 @@ export interface CommandConfig {
   cwd?: string;
   /** Added to the inherited set; `{port}` expands in values. */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Variables copied from the runner's environment when set: exact names, or
+   * prefixes ending in `*` (`'STRIPE_*'`). `env` wins over an inherited value.
+   * A bare `'*'` is `INVALID_CONFIG`.
+   */
+  inheritEnv?: readonly string[];
   /** Ready-probe budget in milliseconds; default 60000. Expiry is `APP_UNREACHABLE`. */
   startupTimeout?: number;
   /** Grace period before force-kill in milliseconds; default 10000. */
@@ -1103,10 +1109,10 @@ export interface TargetApp {
    * Process the runner starts before the first test and stops at the end of
    * the run (a dev server, Metro for a debug build). Structured, never
    * shell-interpreted; the child inherits only `PATH`, `HOME`, the
-   * temp-directory variables, and `command.env`. `{port}` in it is the port
-   * of `url`, fixed or free. Targets declaring the same command share one
-   * process, probed at the first declaring target's `readyUrl`. A release
-   * build has no command.
+   * temp-directory variables, `command.inheritEnv`, and `command.env`.
+   * `{port}` in it is the port of `url`, fixed or free. Targets declaring the
+   * same command share one process, probed at the first declaring target's
+   * `readyUrl`. A release build has no command.
    */
   command?: CommandConfig | undefined;
   /**
@@ -1194,7 +1200,7 @@ export interface CacheConfig {
   mode?: CacheMode;
   /** Custom entry store; omit it to use the file store at `dir`. */
   store?: CacheStore;
-  /** File store directory, resolved against the project root. */
+  /** File store directory, resolved against the project root. `--cache-dir` and `E2E_CACHE_DIR` replace it. */
   dir?: string;
   /**
    * Fails a step whose recording exists but no longer replays (a control
@@ -1465,6 +1471,13 @@ export interface E2EConfig {
   retries?: number;
   /** Fail the run when a test skips a retry after an earlier failed attempt; default false. */
   failOnSkippedFailure?: boolean;
+  /**
+   * Wall-clock budget for running the tests, in milliseconds; default none.
+   * Once spent, the running tests end as `interrupted`, the rest are skipped,
+   * and the run fails with `RUN_TIMEOUT`. `--max-duration` overrides it;
+   * `e2e explore` keeps its own `--timeout`.
+   */
+  maxDuration?: number;
   /** Parallel workers, 1 through 1024; default 1 in CI, else half the cores. An engine may cap it lower. */
   workers?: number;
   /** `{ store }` hands every artifact to a host store as it is produced. */
@@ -1485,7 +1498,7 @@ export interface E2EConfig {
   /**
    * The directory a run writes its results to, relative to the project root;
    * default `.e2e`. It holds `report.json`, `junit.xml`, `summary.md`,
-   * `ai-trace.json`, `artifacts/` (cleared at the start of every run),
+   * `ai-trace.json`, `results/` (cleared once the run's tests start, except on a `--last-failed` rerun),
    * `sessions/`, and the `e2e mcp` session videos under `videos/`.
    * `--output <dir>` overrides it for one run. It must be inside the project
    * root and not the root itself, may not hold a test glob's directory, and

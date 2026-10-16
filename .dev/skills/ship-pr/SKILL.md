@@ -34,7 +34,10 @@ pnpm test:web-benchmark       # when the runner, web engine, or benchmark change
 
 Then the repo rules `pnpm check` cannot see (`AGENTS.md`, "Contracts"):
 
-- A user-visible change to a published package adds a `.changeset/` entry.
+- A user-visible change to a published package adds a `.changeset/` entry,
+  bumped `patch` on `0.x` even for a feature. `minor` only when the change is
+  breaking (summary opens `**Breaking:**`) or the maintainer calls a big
+  release (`**Release:**`).
 - Behavior changes update the matching `docs/**/*.mdx` page in the same
   change, "not implemented yet" callouts included, and `skills/e2e/` when it
   describes the changed surface.
@@ -42,6 +45,11 @@ Then the repo rules `pnpm check` cannot see (`AGENTS.md`, "Contracts"):
   `packages/e2e/tests/types/sdk-types.ts`; a wire change edits the schema,
   both fixtures, and the producer together.
 - A new build input or benchmark dependency goes into `.github/filters.yml`.
+- A new integration, CI service, or migration guide gets the vendor's logo
+  as its sidebar icon and on every card that links to it, never a Font
+  Awesome placeholder. An integration or CI page also gets a card on its
+  overview ([authoring-docs, Page icons](../authoring-docs/SKILL.md#page-icons)).
+  A package PR needs this as much as a docs PR.
 
 ## 2. Verify
 

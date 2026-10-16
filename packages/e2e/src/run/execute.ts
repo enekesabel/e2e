@@ -53,7 +53,7 @@ import { isFailedStatus } from './records.ts';
 import { traceScreen } from './step-screens.ts';
 import { runWithRetries } from './retry.ts';
 import { runSerialUnit, type SerialAttemptRun, type SerialAttemptStart, type SerialHost, type SharedSerialSession } from './serial.ts';
-import { interruptedSkip, pairKey, pairResult, unstartedResult } from './units.ts';
+import { interruptedInPhase, interruptedSkip, pairKey, pairResult, unstartedResult } from './units.ts';
 import { adoptSecrecy, carriedSecrecy, processSecrets, registerDerivedSecrets, redactForSession, resolveSecretValue, sessionSecrecy, staticSecretLedger } from './secrecy.ts';
 import { isSecret } from '../secrets.ts';
 import { SessionStaging, SessionStore, targetIdentity, type SessionIdentity } from './sessions.ts';
@@ -294,7 +294,7 @@ export class TargetExecutor implements SerialHost {
    * Boot work (simulators, device leases) is bounded by the launch timeout
    * but never charged against a step budget.
    */
-  private initEngineOnce(): Promise<void> {
+  initEngineOnce(): Promise<void> {
     const engine = this.target.engine;
     const init = engine?.init?.bind(engine);
     if (init === undefined) return Promise.resolve();
@@ -686,7 +686,7 @@ export class TargetExecutor implements SerialHost {
    * The error is the test's, thrown as it was so `classifyError` keeps its
    * code: `lifecycle` would name every non-engine error an engine failure.
    */
-  private settleAttempt(session: TargetSession, attemptId: string): Promise<void> {
+  settleAttempt(session: TargetSession, attemptId: string): Promise<void> {
     return withScopedBudget(
       this.config.cleanupTimeout,
       this.interruptSignal,
@@ -1034,7 +1034,7 @@ export class TargetExecutor implements SerialHost {
       // run on is published here and cleared when `attemptEnd` fires in `finally`.
       const soft = new SoftFailures();
       publishAttempt(
-        { attemptId, testKind: pair.test.kind, assertionTimeout: this.config.assertionTimeout, budget, soft },
+        { attemptId, owner: 'suite', testKind: pair.test.kind, assertionTimeout: this.config.assertionTimeout, budget, soft },
         attemptEnd.signal,
       );
 
@@ -1119,7 +1119,7 @@ export class TargetExecutor implements SerialHost {
         ? withAbort(
             runInPollScope(bodyPolls, mainWork),
             this.interruptSignal,
-            () => new E2EError('interrupted', 'INTERRUPTED', `run interrupted in phase ${phase}`),
+            () => new E2EError('interrupted', 'INTERRUPTED', interruptedInPhase(this.interruptSignal, phase)),
           )
         : runInPollScope(bodyPolls, mainWork);
       const body = Promise.race([
@@ -1281,8 +1281,8 @@ export class TargetExecutor implements SerialHost {
  * timeout that had already fired: the attempt then timed out, whatever
  * arrived after.
  */
-function classifyAttemptStatus(
-  failure: E2EError,
+export function classifyAttemptStatus(
+  failure: { readonly code: string },
   timedOut: boolean,
   interrupted: boolean,
 ): 'failed' | 'timed-out' | 'interrupted' {

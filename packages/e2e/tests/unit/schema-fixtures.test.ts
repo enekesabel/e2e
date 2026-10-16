@@ -196,6 +196,23 @@ describe.each(schemas)('%s schema', (name) => {
       expect(validate(report)).toBe(true);
     });
 
+    it('validates recording identities while keeping legacy reports valid', () => {
+      const report = readJson('fixtures', 'report-v1.valid.json') as { run: { results: { attempts: { steps: { cache?: Record<string, unknown> }[] }[] }[] } };
+      const cache = report.run.results[0]!.attempts[0]!.steps[0]!.cache!;
+      for (const field of ['provider', 'model']) {
+        cache['recordedBy'] = { provider: 'test', model: 'A', [field]: 'x'.repeat(300) };
+        expect(validate(report)).toBe(true);
+        cache['recordedBy'] = { provider: 'test', model: 'A', [field]: 'x'.repeat(301) };
+        expect(validate(report)).toBe(false);
+      }
+      for (const recordedBy of [null, { provider: '', model: 'A' }, { provider: 'test', model: '  ' }, { provider: 'test' }, { provider: 'test', model: 1 }, { provider: 'test', model: 'A', calls: 1 }]) {
+        cache['recordedBy'] = recordedBy;
+        expect(validate(report)).toBe(false);
+      }
+      delete cache['recordedBy'];
+      expect(validate(report)).toBe(true);
+    });
+
     it('lets a missed or handed-off step say why it was not recorded, with a closed reason', () => {
       const report = readJson('fixtures', 'report-v1.valid.json') as {
         run: { results: { attempts: { steps: { api: string; cache?: { mode: string; reason?: string; notRecorded?: string } }[] }[] }[] };

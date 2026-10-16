@@ -233,6 +233,12 @@
       "required": ["mode", "replayedActions", "totalActions"],
       "properties": {
         "mode": { "enum": ["self-finalized", "agent-concluded", "missed"] },
+        "recordedBy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "model"],
+          "properties": { "provider": { "type": "string", "maxLength": 300, "pattern": "\\S" }, "model": { "type": "string", "maxLength": 300, "pattern": "\\S" } }
+        },
         "reason": {
           "enum": [
             "retry",
@@ -418,7 +424,7 @@
       "required": ["cause", "reason"],
       "properties": {
         "cause": {
-          "enum": ["explicit", "filtered", "platform-unavailable", "capability-unavailable", "setup-failed", "serial-predecessor-failed", "hook-failed", "infrastructure-unavailable", "failure-limit"]
+          "enum": ["explicit", "filtered", "platform-unavailable", "capability-unavailable", "setup-failed", "serial-predecessor-failed", "hook-failed", "infrastructure-unavailable", "failure-limit", "time-limit"]
         },
         "reason": { "type": "string", "maxLength": 8192 },
         "relatedId": { "type": "string", "minLength": 1 }

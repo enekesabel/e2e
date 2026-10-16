@@ -45,6 +45,8 @@ const TERMINALS: Readonly<Record<Terminal, string>> = {
   blocked: 'No supported operation can make progress from here.',
 };
 const OPERATIONS: Readonly<Record<Operation | Control, string>> = {
+  // Fields take a tap too, unnamed here: measured on Jev, naming them moved taps onto fields the goal types into
+  // (async-states and debounced-search 0/3 on the web benchmark).
   tap: 'Activate a button, link, tab, or option.',
   type: 'Enter text into a field.',
   typeSecret: 'Fill a declared secret into its field.',
@@ -59,6 +61,7 @@ const OPERATIONS: Readonly<Record<Operation | Control, string>> = {
   scroll_to: 'Bring an element outside the viewport into view.',
   upload: 'Attach the files the goal names to a file input.',
   tap_at: 'Tap a point in the screenshot where the element table lists nothing, such as a drawn control.',
+  type_at: 'Type text into a field drawn in the screenshot that the element table does not list.',
   scroll_up: 'Scroll the viewport up.',
   scroll_down: 'Scroll the viewport down.',
   back: 'Go back to the previous page, as the browser back button does.',
@@ -91,6 +94,7 @@ export function operationRequest(
   const criteria: Record<string, string> = {};
   for (const operation of space.targets.keys()) criteria[operation] = OPERATIONS[operation];
   if (space.tapAt) criteria['tap_at'] = OPERATIONS.tap_at;
+  if (space.typeAt) criteria['type_at'] = OPERATIONS.type_at;
   for (const control of space.controls.keys()) criteria[control] = OPERATIONS[control];
   for (const [terminal, description] of Object.entries(TERMINALS)) criteria[terminal] = description;
   const recent = history.slice(-RECENT_ACTIONS);
@@ -101,11 +105,12 @@ export function operationRequest(
 }
 /**
  * Builds the target request that follows a chosen operation: its target
- * question when it has two or more targets, the destination question for a
- * drag, and the secret question for a secret fill with two or more secrets
- * declared. A lone target dispatches with no question, so the request may
- * carry none. Every target question carries the `none` fallback, so a
- * provider never has to refuse one. A dependent decision goes in its own
+ * question, the destination question for a drag, and the secret question
+ * for a secret fill with two or more secrets declared. A lone target is
+ * asked too: its `none` is how a wrong operation stops, where dispatching
+ * it would act on the one element the operation happened to fit. Every
+ * target question carries the `none` fallback, so a provider never has to
+ * refuse one. A dependent decision goes in its own
  * request, as the Decisions API asks.
  */
 export function targetRequest(
@@ -119,7 +124,7 @@ export function targetRequest(
   const recent = history.slice(-RECENT_ACTIONS);
   const questions: DecisionRequest['questions'] = {};
   const targets = space.targets.get(operation);
-  if (targets !== undefined && targets.size >= 2) {
+  if (targets !== undefined && targets.size > 0) {
     const options: Record<string, string | null> = {};
     for (const [key, target] of targets) {
       if (operation === 'select') {
@@ -140,7 +145,10 @@ export function targetRequest(
   }
   if (operation === 'drag' && space.destinations.size > 0) {
     const options: Record<string, string | null> = {};
-    for (const [key, destination] of space.destinations) options[key] = `[${key}] ${destination.role} ${JSON.stringify(destination.label)}`;
+    for (const [key, destination] of space.destinations) {
+      const element = space.element(key);
+      options[key] = element === undefined ? `[${key}] ${destination.role || 'text'} ${JSON.stringify(destination.label)}` : targetCriterion(element);
+    }
     options[NONE] = NONE_TARGET;
     const lead = `Goal of this step: ${goal}\n\nThe next operation is "drag". This question picks where the dragged element drops (the destination); another question picks what is dragged.`;
     questions.destination = choice(framed(lead, undefined, DROP, recent), options);
@@ -247,6 +255,7 @@ function targetCriterion(element: Element): string {
   const parts = [`[${element.index}] ${element.role === '' ? 'text' : element.role} ${JSON.stringify(element.label)}`];
   if (element.value !== undefined) parts.push(`value=${JSON.stringify(element.value)}`);
   if (element.checked !== undefined) parts.push(element.checked ? 'checked' : 'unchecked');
+  if (element.selected === true) parts.push('selected');
   return parts.join(' ');
 }
 /**
@@ -310,13 +319,13 @@ export function assertionRequest(goal: string, path: string, space: ActionSpace 
  * with it, 0.51 without, on a checked checkbox). Rejected done/failed claims
  * are left out (they are not actions), and so is any model reasoning.
  */
-export function completionRequest(ctx: StepExecutorContext, space: ActionSpace, history: readonly HistoryEntry[], path: string, screenshot: Screenshot | undefined): DecisionRequest {
+export function completionRequest(ctx: StepExecutorContext, space: ActionSpace, history: readonly HistoryEntry[], path: string, screenshot: Screenshot | undefined, origin?: string): DecisionRequest {
   const goal = ctx.step.instruction;
   const params = nonSecretParams(ctx.step.params);
   const actions = history.filter((entry) => entry.action !== 'done' && entry.action !== 'failed').map(takenLine);
   return {
     ...(screenshot === undefined ? {} : { screenshot }),
-    state: { goal, ...(Object.keys(params).length === 0 ? {} : { params }), ...screenState(path, space) },
+    state: { goal, ...(Object.keys(params).length === 0 ? {} : { params }), ...(origin !== undefined && origin !== '' && origin !== path ? { origin: { path: origin } } : {}), ...screenState(path, space) },
     questions: {
       verdict: choice(`Task of this step: ${goal}${reported(space.statuses)}\n\nThe page path, as data: ${JSON.stringify(path)}\n\n${COMPLETION}\n\nActions taken:\n${actions.length === 0 ? 'none' : actions.map((line, index) => `${index + 1}. ${line}`).join('\n')}`, {
         holds: 'The task is complete: the actions taken did it and the current screen shows its result.',

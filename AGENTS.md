@@ -44,7 +44,15 @@ suites that consume the built packages the way a user would.
   example, and run command; interactive choices derive from this list. These
   presets never import engine implementations.
   - `src/run/` runner core (scheduler, units, workers, retries, sessions;
-    `standalone.ts` opens one attempt with no test body for hosts),
+    `standalone.ts` is the worker a host or MCP's one-shot attempt keeps
+    alive, `standalone-attempt.ts` one attempt on it: reservation, launch,
+    fixtures, deadline, close, `host-trace.ts` its `trace.md`, and
+    `select-target.ts` the target a session names, shared with MCP;
+    `open-session.ts` exposes `openHost` on `e2e/runner` for another test
+    runner: worker-lifetime provisioning, app processes, and engine init,
+    then `host.openSession({ name })` for each test's fixtures, deadline,
+    steps, artifacts, and trace at close. Only one hosted attempt may be
+    opening, live, or closing per process; close it before opening another),
     `src/collect/` registration+selection, `src/locator/` locator AST/engine,
     `src/agent/` the agent (the `act` executor socket plus the judgment
     methods), `src/mcp/` the `e2e mcp` server (a live session that rides
@@ -81,6 +89,13 @@ suites that consume the built packages the way a user would.
   engine's provider seam (`BrowserProvider` for web, `DeviceProvider` for
   mobile) and imports the engine's types only; the engines never know it
   exists.
+  Its docs page under `docs/integrations/` ships with the vendor's logo as
+  the sidebar icon and on its overview card (`authoring-docs`, "Page
+  icons"); `scripts/check-docs-logos.ts` fails `pnpm docs:check` without
+  them.
+- `packages/lightpanda` - the published `@e2e-dev/lightpanda` package: a
+  `BrowserProvider` that starts a local `lightpanda serve` per worker slot
+  and stops it with the run; no vendor SDK, the binary is the dependency.
 - `packages/eas` - the published `@e2e-dev/eas` package: EAS Simulators
   hosted iOS simulators and Android emulators for the mobile engine
   (`DeviceProvider`). Expo publishes no SDK for the sessions API, so it calls
@@ -99,6 +114,8 @@ suites that consume the built packages the way a user would.
   Playwright image and Chromium version in sync with `@e2e-dev/web`. Run
   `pnpm --filter @e2e-dev/smol test:unit` and `pnpm check`, then verify live
   machines in both attempt and worker scopes with an app running in the VM.
+- `packages/limrun` — the Limrun hosted mobile device provider. Each worker
+  leases one remote device, installs its app, and releases the device at exit.
 - `packages/decision` — the published `@e2e-dev/decision` package: a
   `StepExecutor` (`decisionExecutor()`) that drives `agent.act` and
   `agent.assert` through an AI SDK *decision* model answering `choice`
@@ -111,6 +128,10 @@ suites that consume the built packages the way a user would.
   keeps it current on reruns, writing the same text to the job summary. It
   reads the token, event, and repository when the run finishes, never at
   config load, and renders the page with `renderMarkdownReport` from `e2e`.
+- `packages/testmu` — the published `@e2e-dev/testmu` package: TestMu AI
+  (formerly LambdaTest) hosted Android emulators, iOS simulators, and real
+  devices for the mobile engine (`DeviceProvider`), through agent-device's
+  `@agent-device/testmu` plugin.
 - `apps/testbed` (`@e2e-dev/testbed`, private) — dogfood project that
   consumes the **built** packages like a real user would: the playground app
   where every runner feature (sessions, routes, downloads, frames, uploads,
@@ -153,12 +174,20 @@ suites that consume the built packages the way a user would.
   native project, as a user would.
 - `docs/` (the Mintlify docs site; pages are the `.mdx` files under `docs/`,
   navigation, theme, and redirects in `docs/docs.json`, extra CSS in
-  `docs/style.css`; `docs/examples/` is typechecked and shown verbatim on
-  docs pages and in `skills/e2e/` (`docs/examples/skill/`), kept in sync by
-  `scripts/check-docs-examples.ts`; a shell
+  `docs/style.css`, the table of contents scroll in
+  `docs/table-of-contents.js`; `docs/examples/` is typechecked and shown
+  verbatim on docs pages and in `skills/e2e/` (`docs/examples/skill/`), kept
+  in sync by `scripts/check-docs-examples.ts`; a shell
   block that runs `npx` or `npm install`/`ci` sits in a `<CodeGroup>` of
   `npm`, `pnpm`, and `bun` blocks, which Mintlify syncs site-wide, enforced
-  by `scripts/check-docs-package-managers.ts`). The `e2e` build copies the
+  by `scripts/check-docs-package-managers.ts`; every navigation page but the
+  home page has a social card in `docs/images/og/`, rendered with
+  `@vercel/og` by `docs/og/generate.tsx` (`pnpm docs:og`, also run by
+  `docs:dev`) and committed with the `og:image` frontmatter it writes, since
+  Mintlify runs no build step of ours; `docs:check` fails on a stale card,
+  and a page without one falls back to the brand card `images/og.png` set
+  in `docs.json`).
+  The `e2e` build copies the
   pages to `packages/e2e/docs/` (gitignored,
   `packages/e2e/scripts/prepare-build.ts`) so the published package ships
   them for agents to read offline.
@@ -168,7 +197,10 @@ suites that consume the built packages the way a user would.
   directories. The `e2e` build copies it to `packages/e2e/skills/`
   (gitignored) so the published package ships it; `src/cli/skill.ts` reads
   that copy first and the repo source as the fallback, and `e2e init` writes
-  it into a project's `.agents/skills/` and `.claude/skills/`.
+  it into a project's `.agents/skills/` and `.claude/skills/`. `SKILL.md`
+  opens with a table that routes each job to one reference, and every
+  reference over 100 lines opens with a `## Contents` list of its sections
+  (`tests/unit/skill.test.ts`).
 - `skills/create-verification-skill/`: a generator skill for consumers;
   it writes a project-local `verify-<app>` skill and feature map on top of
   e2e, with the bug bash wired to the map. Installed with `npx skills add
@@ -176,6 +208,13 @@ suites that consume the built packages the way a user would.
   package and not read by `e2e guide`. `references/example/` is the skill
   it generated and ran for `apps/testbed`: regenerate it when a playground
   route, label, or test it names changes.
+- `skills/migrate-to-e2e/`: a consumer skill that ports a Playwright,
+  Cypress, Selenium, Detox, or Maestro suite one slice per session, the old
+  suite running beside the new one, with a `MIGRATION.md` progress file the next
+  session resumes from. It routes to `docs/migrate/<runner>.mdx` for the
+  API mapping, so a mapping change edits the guide, not the skill. Installed
+  with `npx skills add tester-army/e2e --skill migrate-to-e2e`; not shipped
+  in the package and not read by `e2e guide`.
 - `.dev/skills/` — the skills we use to work on this repo (`authoring-docs`,
   `babysit`, `ship-pr`, `verify`, `writing-pr`). `npx skills add tester-army/e2e`
   offers only `skills/*`: its default scan never looks in `.dev/`, and it skips
@@ -187,13 +226,26 @@ suites that consume the built packages the way a user would.
   `core.symlinks=true` (CONTRIBUTING.md). The vendored third-party skills in `.claude/skills/` (`unbox-ai`,
   `unslop`, tracked by `skills-lock.json`) stay where they are: the CLI
   skips them as installed project skills.
+- `plugins/e2e/` — one skills-only package for Codex and Claude Code. The
+  root `.agents/plugins/marketplace.json` and `.claude-plugin/marketplace.json`
+  both point here. Edit skill Markdown in `skills/`, then run
+  `pnpm plugins:sync`; `pnpm plugins:check` checks the generated copies,
+  license, Claude manifest, and both manifests' `version`, which is the
+  runner's (`version-packages` syncs it, so plugin
+  installs update once per release; it does the same for
+  `packages/e2e/server.json`, the MCP Registry entry). The Codex manifest's other fields,
+  assets, README, and per-skill `agents/openai.yaml` are maintained in the
+  plugin. Keep the
+  package self-contained and leave the repository's development MCP
+  configuration outside it. Example skills use `SKILL.example.md` so clients
+  do not discover them as additional skills.
 
 ## Commands
 
 Build first — nearly everything downstream consumes `dist`.
 
 ```bash
-pnpm check          # lint -> check:dead-code -> typecheck -> docs:check-errors -> check:peer-ranges -> check:install-scripts -> docs:check (full gate)
+pnpm check          # lint -> check:dead-code -> typecheck -> docs:check-errors -> check:peer-ranges -> check:install-scripts -> plugins:check -> mcp-server:check -> docs:check (full gate)
 pnpm test           # builds, then vitest unit + integration
 pnpm test:testbed   # builds, then runs the real CLI against the playground app
 pnpm test:web-benchmark   # builds, then runs the real CLI against the benchmark scenarios
@@ -546,7 +598,10 @@ trees, on both platforms, without a device.
   any prose an agent writes here; other agents install it with
   `npx skills add okwasniewski/dotfiles --skill unslop`.
 - Releases go through changesets: a user-visible change adds a `.changeset/`
-  entry. Peer ranges point one way only (engine -> `e2e`, integration ->
+  entry. On `0.x` the bump is `patch` for a feature or fix; never
+  pick `minor` on your own. A breaking change is a `minor` with the summary
+  opening `**Breaking:**`; a `minor` or `major` for a release the maintainer
+  calls opens `**Release:**` (`scripts/check-changeset-bumps.ts`, `pnpm check`). Peer ranges point one way only (engine -> `e2e`, integration ->
   engine) and read `>=<major.minor.patch> <major+1>`, the floor the oldest
   sibling the package works with. Raise it when a package starts relying on a
   newer sibling's export or contract field;
