@@ -138,8 +138,7 @@ export function containerKey(
 function namedAfterTwinOf(container: RedactedNode, branch: RedactedNode | undefined): boolean {
   if (branch === undefined || !CONTAINER_ROLES.has(branch.role ?? '')) return false;
   for (const child of container.children ?? []) {
-    const own = (child.text ?? child.name ?? '').trim();
-    if (own === '' && firstText(child) === undefined) continue;
+    if (ownText(child) === '' && firstText(child) === undefined) continue;
     return child.ref.id !== branch.ref.id && child.role === branch.role;
   }
   return false;
@@ -161,12 +160,25 @@ export function parentsOf(nodes: ReadonlyMap<string, RedactedNode>): ReadonlyMap
  */
 function firstText(node: RedactedNode): string | undefined {
   for (const child of node.children ?? []) {
-    const own = (child.text ?? child.name ?? '').trim();
+    const own = ownText(child);
     if (own !== '') return own;
     const deeper = firstText(child);
     if (deeper !== undefined) return deeper;
   }
   return undefined;
+}
+
+/**
+ * A node's text before its first child's: a `<p>` whose text reads
+ * "Count: 0" with the `<output>` "0" as a child reads "Count:". Falls back
+ * to the whole text when no child's text starts after the node's own.
+ */
+function ownText(node: RedactedNode): string {
+  const text = (node.text ?? node.name ?? '').trim();
+  const first = node.children?.find((child) => (child.text ?? '').trim() !== '')?.text?.trim();
+  const at = first === undefined ? -1 : text.indexOf(first);
+  const before = at > 0 ? text.slice(0, at).trim() : '';
+  return before === '' ? text : before;
 }
 
 /** A container's own name or text, when it has one. */

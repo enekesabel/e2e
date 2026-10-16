@@ -42,7 +42,7 @@ describe('container keys', () => {
       const nodes = new Map<string, RedactedNode>();
       const parents = new Map<string, string>();
       const count: SemanticNode = { ref: { id: 'o', revision: 'r' }, role: 'status', text: reading };
-      const line: SemanticNode = { ref: { id: 'p', revision: 'r' }, role: 'paragraph', text: 'Count:', children: [count] };
+      const line: SemanticNode = { ref: { id: 'p', revision: 'r' }, role: 'paragraph', text: `Count: ${reading}`, children: [count] };
       const button: SemanticNode = { ref: { id: 'b', revision: 'r' }, role: 'button', name: 'Increment' };
       nodes.set('s', redacted({ ref: { id: 's', revision: 'r' }, role: 'region', name: 'Counter', children: [line, button] }));
       for (const node of [count, line, button]) nodes.set(node.ref.id, redacted(node));
