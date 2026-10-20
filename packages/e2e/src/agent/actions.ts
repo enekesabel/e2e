@@ -91,6 +91,7 @@ const CONTAINER_ROLES: ReadonlySet<string> = new Set(['row', 'listitem', 'articl
 const MAX_WITHIN_CHARS = 80;
 /** Roles whose text is a value the app updates in place, a count, a clock, or progress, never the name of what holds it. */
 const LIVE_VALUE_ROLES: ReadonlySet<string> = new Set(['status', 'timer', 'marquee', 'log', 'progressbar', 'meter']);
+/** No role skipped: the container key with live values read as text (`liveContainerKey`). */
 const NO_ROLES: ReadonlySet<string> = new Set();
 
 /**
@@ -109,7 +110,8 @@ const NO_ROLES: ReadonlySet<string> = new Set();
  * A live value (`<output>`, a status, a timer, a progress bar) keys nothing
  * either: a region whose first line reads `Count: <output>0</output>` would
  * be keyed "0", and a replay that starts at another count would not find its
- * control.
+ * control. A container whose only text is such a value is not keyed by its
+ * own label instead: a list item's label is its content, value included.
  */
 export function containerKey(
   id: string,
@@ -146,7 +148,9 @@ function keyOf(
   while (cursor !== undefined) {
     const container = nodes.get(cursor);
     if (container !== undefined && CONTAINER_ROLES.has(container.role ?? '')) {
-      const key = (namedAfterTwinOf(container, nodes.get(came), skipped) ? undefined : firstLeafText(container, skipped)) ?? ownLabel(container);
+      const key = namedAfterTwinOf(container, nodes.get(came), skipped)
+        ? ownLabel(container)
+        : (firstLeafText(container, skipped) ?? (firstLeafText(container, NO_ROLES) === undefined ? ownLabel(container) : undefined));
       const clean = key === undefined ? '' : bound(collapseText(key), MAX_WITHIN_CHARS);
       return clean === '' || squash(clean) === own ? undefined : clean;
     }

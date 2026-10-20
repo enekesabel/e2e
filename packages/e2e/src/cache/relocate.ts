@@ -198,22 +198,18 @@ function matchingIds(
   nodes: ReadonlyMap<string, RedactedNode>,
 ): readonly string[] {
   const candidates = describeNodes(nodes);
+  const { within } = descriptor;
+  let parents: ReadonlyMap<string, string> | undefined;
   // A recorded container key must hold: the same "Delete" in another row is
   // a different control. Checked against the tree the candidates came from,
   // never guessed, read past live values or with them (`describePlacement`).
-  const keyed =
-    descriptor.within === undefined
-      ? candidates
-      : (() => {
-          const parents = parentsOf(nodes);
-          return candidates.filter(
-            (candidate) =>
-              containerKey(candidate.id, nodes, parents) === descriptor.within ||
-              liveContainerKey(candidate.id, nodes, parents) === descriptor.within,
-          );
-        })();
+  const keyed = (id: string): boolean => {
+    if (within === undefined) return true;
+    parents ??= parentsOf(nodes);
+    return containerKey(id, nodes, parents) === within || liveContainerKey(id, nodes, parents) === within;
+  };
   for (const tier of descriptorTiers(descriptor)) {
-    const matches = tierMatches(tier, keyed);
+    const matches = tierMatches(tier, candidates).filter(keyed);
     if (matches.length > 0) return matches;
   }
   return [];
@@ -235,8 +231,9 @@ function tierMatches(tier: TraceTargetDescriptor, candidates: readonly Described
  * Where `node` sat when it was acted on: its container's key and, when the
  * description still matches several controls, its place among them. A live
  * value keys the container only when nothing else tells the node from its
- * twins: rows that differ only by a count then miss once the count changes,
- * where a place alone would hand the action to whichever row moved there.
+ * twins, as it always did: rows that differ only by a count then follow a
+ * reorder and miss a count no row reads, where a place alone would hand the
+ * action to whichever row moved there.
  */
 export function describePlacement(
   node: RedactedNode,

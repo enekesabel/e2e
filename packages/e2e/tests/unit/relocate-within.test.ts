@@ -58,7 +58,7 @@ describe('container keys', () => {
     }
   });
 
-  it('keys twins that only a live value tells apart by that value, so a reorder finds the right one and a new count misses', () => {
+  it('keys twins that only a live value tells apart by that value, so a reorder finds the right one and a count no row reads misses', () => {
     // `<li><p>Qty: <output>N</output></p><button>Remove</button></li>`: nothing but the count differs between rows.
     const rows = (counts: readonly string[]) => {
       const nodes = new Map<string, RedactedNode>();
@@ -81,6 +81,50 @@ describe('container keys', () => {
     const descriptor = { role: 'button', name: 'Remove', ...placement };
     expect(relocateDescriptor(descriptor, rows(['5', '2']).nodes)).toEqual({ kind: 'found', id: 'b-5' });
     expect(relocateDescriptor(descriptor, rows(['2', '6']).nodes)).toEqual({ kind: 'failed', failure: 'target-not-found' });
+  });
+
+  it('keys nothing by a container whose only text is a live value, not even its label that carries the value', () => {
+    // `<li>Pears <output>N</output> <button aria-label="Remove"><svg/></button></li>`: the list item is named from its content.
+    const rows = (counts: readonly (readonly [string, string])[]) => {
+      const nodes = new Map<string, RedactedNode>();
+      const parents = new Map<string, string>();
+      for (const [item, count] of counts) {
+        const value: SemanticNode = { ref: { id: `o-${item}`, revision: 'r' }, role: 'status', name: count, text: count };
+        const icon: SemanticNode = { ref: { id: `i-${item}`, revision: 'r' }, role: 'image' };
+        const button: SemanticNode = { ref: { id: `b-${item}`, revision: 'r' }, role: 'button', name: 'Remove', text: '', children: [icon] };
+        nodes.set(`li-${item}`, redacted({ ref: { id: `li-${item}`, revision: 'r' }, role: 'listitem', name: `${item} ${count} Remove`, text: `${item} ${count}`, children: [value, button] }));
+        for (const node of [value, icon, button]) nodes.set(node.ref.id, redacted(node));
+        parents.set(`o-${item}`, `li-${item}`);
+        parents.set(`i-${item}`, `b-${item}`);
+        parents.set(`b-${item}`, `li-${item}`);
+      }
+      return { nodes, parents };
+    };
+    const single = rows([['Pears', '5']]);
+    expect(describePlacement(single.nodes.get('b-Pears')!, single.nodes, single.parents)).toEqual({});
+    expect(relocateDescriptor({ role: 'button', name: 'Remove' }, rows([['Pears', '6']]).nodes)).toEqual({ kind: 'found', id: 'b-Pears' });
+    // Twins with nothing else to tell them apart keep the value.
+    const twins = rows([['Apples', '3'], ['Pears', '5']]);
+    expect(describePlacement(twins.nodes.get('b-Pears')!, twins.nodes, twins.parents)).toEqual({ within: '5' });
+  });
+
+  it('places an anonymous control next to a live value as the one of its kind, not by the value', () => {
+    // `<section aria-label="Counter"><output>N</output><button><svg/></button></section>`
+    const counter = (reading: string) => {
+      const nodes = new Map<string, RedactedNode>();
+      const parents = new Map<string, string>();
+      const count: SemanticNode = { ref: { id: 'o', revision: 'r' }, role: 'status', name: reading, text: reading };
+      const button: SemanticNode = { ref: { id: 'b', revision: 'r' }, role: 'button' };
+      nodes.set('s', redacted({ ref: { id: 's', revision: 'r' }, role: 'region', name: 'Counter', children: [count, button] }));
+      for (const node of [count, button]) nodes.set(node.ref.id, redacted(node));
+      parents.set('o', 's');
+      parents.set('b', 's');
+      return { nodes, parents };
+    };
+    const recorded = counter('0');
+    const placement = describePlacement(recorded.nodes.get('b')!, recorded.nodes, recorded.parents);
+    expect(placement).toEqual({ position: { index: 0, of: 1 } });
+    expect(relocateDescriptor({ role: 'button', ...placement }, counter('7').nodes)).toEqual({ kind: 'found', id: 'b' });
   });
 
   it('keys a row by its first text past a live value, and finds it after the value and the order change', () => {
@@ -169,15 +213,15 @@ describe('container keys', () => {
 
   it('does not key a row of a windowed list by whichever twin row is rendered first', () => {
     // An Android FlatList: an unnamed group of group rows, the rendered window moving with the scroll.
-    const list = (first: number, count?: string) => {
+    const list = (first: number, header?: SemanticNode) => {
       const nodes = new Map<string, RedactedNode>();
       const parents = new Map<string, string>();
       const rows: SemanticNode[] = [];
-      if (count !== undefined) {
-        const status: SemanticNode = { ref: { id: 'count', revision: 'r' }, role: 'status', name: count, text: count };
-        nodes.set(status.ref.id, redacted(status));
-        parents.set(status.ref.id, 'list');
-        rows.push(status);
+      if (header !== undefined) {
+        for (const node of [header, ...(header.children ?? [])]) nodes.set(node.ref.id, redacted(node));
+        for (const child of header.children ?? []) parents.set(child.ref.id, header.ref.id);
+        parents.set(header.ref.id, 'list');
+        rows.push(header);
       }
       for (let n = first; n < first + 12; n += 1) {
         const label = `Row ${String(n).padStart(4, '0')}`;
@@ -199,9 +243,12 @@ describe('container keys', () => {
     expect(containerKey('d1', table().nodes, table().parents)).toBe('Budget draft');
     const live = list(501);
     expect(relocateDescriptor({ role: 'group', name: 'Row 0512', testId: 'row-512' }, live.nodes)).toEqual({ kind: 'found', id: 'row-512' });
-    // A live count above the rows is no first text: the list is still named after its first row.
-    const counted = list(500, '1,200 results');
+    // A live count above the rows is no first text, alone or in a line: the list is still named after its first row.
+    const count: SemanticNode = { ref: { id: 'count', revision: 'r' }, role: 'status', name: '1,200', text: '1,200' };
+    const counted = list(500, count);
     expect(containerKey('row-505', counted.nodes, counted.parents)).toBeUndefined();
+    const line = list(500, { ref: { id: 'line', revision: 'r' }, text: 'Showing 1,200 results', children: [count] });
+    expect(containerKey('row-505', line.nodes, line.parents)).toBeUndefined();
   });
 
   it('keys a control by its nearest container only, so rows with no text of their own share no outer label', () => {
