@@ -229,11 +229,11 @@ function tierMatches(tier: TraceTargetDescriptor, candidates: readonly Described
 
 /**
  * Where `node` sat when it was acted on: its container's key and, when the
- * description still matches several controls, its place among them. A live
- * value keys the container only when nothing else tells the node from its
- * twins, as it always did: rows that differ only by a count then follow a
- * reorder and miss a count no row reads, where a place alone would hand the
- * action to whichever row moved there.
+ * description still matches several controls, its place among them. When
+ * the key read past live values still leaves twins, the key read with them
+ * replaces it: rows that differ only by a count then follow a reorder and
+ * miss a count no row reads, where a place alone would hand the action to
+ * whichever row moved there.
  */
 export function describePlacement(
   node: RedactedNode,

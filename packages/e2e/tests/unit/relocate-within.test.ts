@@ -249,6 +249,11 @@ describe('container keys', () => {
     expect(containerKey('row-505', counted.nodes, counted.parents)).toBeUndefined();
     const line = list(500, { ref: { id: 'line', revision: 'r' }, text: 'Showing 1,200 results', children: [count] });
     expect(containerKey('row-505', line.nodes, line.parents)).toBeUndefined();
+    // A named list still keys its rows by its own label, past the count.
+    for (const named of [list(500), counted, line]) {
+      named.nodes.set('list', { ...named.nodes.get('list')!, name: 'Results' });
+      expect(containerKey('row-505', named.nodes, named.parents)).toBe('Results');
+    }
   });
 
   it('keys a control by its nearest container only, so rows with no text of their own share no outer label', () => {

@@ -110,8 +110,7 @@ const NO_ROLES: ReadonlySet<string> = new Set();
  * A live value (`<output>`, a status, a timer, a progress bar) keys nothing
  * either: a region whose first line reads `Count: <output>0</output>` would
  * be keyed "0", and a replay that starts at another count would not find its
- * control. A container whose only text is such a value is not keyed by its
- * own label instead: a list item's label is its content, value included.
+ * control.
  */
 export function containerKey(
   id: string,
@@ -122,9 +121,8 @@ export function containerKey(
 }
 
 /**
- * The container key read with live values as text, the way `containerKey`
- * read it before it skipped them: the key for twins that nothing else tells
- * apart (`describePlacement`).
+ * The container key with live values read as text: the key for twins that
+ * nothing else tells apart (`describePlacement`).
  */
 export function liveContainerKey(
   id: string,
@@ -148,9 +146,7 @@ function keyOf(
   while (cursor !== undefined) {
     const container = nodes.get(cursor);
     if (container !== undefined && CONTAINER_ROLES.has(container.role ?? '')) {
-      const key = namedAfterTwinOf(container, nodes.get(came), skipped)
-        ? ownLabel(container)
-        : (firstLeafText(container, skipped) ?? (firstLeafText(container, NO_ROLES) === undefined ? ownLabel(container) : undefined));
+      const key = namedAfterTwinOf(container, nodes.get(came), skipped) ? ownLabel(container) : firstTextOf(container, skipped);
       const clean = key === undefined ? '' : bound(collapseText(key), MAX_WITHIN_CHARS);
       return clean === '' || squash(clean) === own ? undefined : clean;
     }
@@ -196,6 +192,17 @@ function firstLeafText(node: RedactedNode, skipped: ReadonlySet<string>): string
     if (deeper !== undefined) return deeper;
   }
   return undefined;
+}
+
+/**
+ * The first leaf text under a container past nodes in a `skipped` role, or
+ * else its own label. None when its only leaf text is in a skipped role: a
+ * list item's label is its content, so it would carry the value back in.
+ */
+function firstTextOf(container: RedactedNode, skipped: ReadonlySet<string>): string | undefined {
+  const leaf = firstLeafText(container, skipped);
+  if (leaf !== undefined) return leaf;
+  return skipped.size > 0 && firstLeafText(container, NO_ROLES) !== undefined ? undefined : ownLabel(container);
 }
 
 /** A container's own name or text, when it has one. */
