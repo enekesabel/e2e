@@ -89,6 +89,8 @@ export interface Placement {
 const CONTAINER_ROLES: ReadonlySet<string> = new Set(['row', 'listitem', 'article', 'group', 'region', 'dialog', 'tabpanel']);
 /** Longest container key kept. */
 const MAX_WITHIN_CHARS = 80;
+/** Roles whose text is a value the app updates in place, a count or a clock, never the name of what holds it. */
+const LIVE_VALUE_ROLES: ReadonlySet<string> = new Set(['status', 'timer', 'marquee']);
 
 /**
  * The key of the nearest named container a node sits in, the first text of
@@ -96,16 +98,16 @@ const MAX_WITHIN_CHARS = 80;
  * more than the node's own name. Ten rows each with a "Delete" button are ten
  * identical descriptors; "Delete in the row that starts with Budget draft" is
  * one. A row whose only text is its own (`<li>Alpha <button><svg/></li>`)
- * is keyed by it. A node's own text comes before its children's, so a
- * region whose first line reads `Count: <output>0</output>` is keyed
- * "Count:", not by the count. Only the nearest container counts: the list
- * around a row with no text names every row alike, so its key would tell no
- * twin apart. A container whose first text belongs to a twin of the row the
- * node came up through is such a list, and keys nothing by that text: a
- * windowed list renders whichever rows are near the viewport, so its first
- * row is a scroll position, not a place, and the same row would read as
- * `Row 0512 in Row 0500` one time and `in Row 0501` the next. Its own label
- * still keys it.
+ * is keyed by it. Only the nearest container counts: the list around a row
+ * with no text names every row alike, so its key would tell no twin apart.
+ * A container whose first text belongs to a twin of the row the node came
+ * up through is such a list, and keys nothing by that text: a windowed list
+ * renders whichever rows are near the viewport, so its first row is a scroll
+ * position, not a place, and the same row would read as `Row 0512 in Row
+ * 0500` one time and `in Row 0501` the next. Its own label still keys it.
+ * A live value (`<output>`, a status, a timer) keys nothing either: a region
+ * whose first line reads `Count: <output>0</output>` would be keyed "0", and
+ * a replay that starts at another count would not find its control.
  */
 export function containerKey(
   id: string,
@@ -119,7 +121,7 @@ export function containerKey(
   while (cursor !== undefined) {
     const container = nodes.get(cursor);
     if (container !== undefined && CONTAINER_ROLES.has(container.role ?? '')) {
-      const key = (namedAfterTwinOf(container, nodes.get(came)) ? undefined : firstText(container)) ?? ownLabel(container);
+      const key = (namedAfterTwinOf(container, nodes.get(came)) ? undefined : firstLeafText(container)) ?? ownLabel(container);
       const clean = key === undefined ? '' : bound(collapseText(key), MAX_WITHIN_CHARS);
       return clean === '' || squash(clean) === own ? undefined : clean;
     }
@@ -138,7 +140,9 @@ export function containerKey(
 function namedAfterTwinOf(container: RedactedNode, branch: RedactedNode | undefined): boolean {
   if (branch === undefined || !CONTAINER_ROLES.has(branch.role ?? '')) return false;
   for (const child of container.children ?? []) {
-    if (ownText(child) === '' && firstText(child) === undefined) continue;
+    if (LIVE_VALUE_ROLES.has(child.role ?? '')) continue;
+    const own = (child.children?.length ?? 0) === 0 ? (child.text ?? child.name ?? '').trim() : '';
+    if (own === '' && firstLeafText(child) === undefined) continue;
     return child.ref.id !== branch.ref.id && child.role === branch.role;
   }
   return false;
@@ -153,32 +157,16 @@ export function parentsOf(nodes: ReadonlyMap<string, RedactedNode>): ReadonlyMap
   return parents;
 }
 
-/**
- * The first text under a container, depth-first, a node's own text before
- * its children's: `<p>Count: <output>0</output></p>` reads "Count:", not the
- * count, so a region that shows a live value is keyed by the words around it.
- */
-function firstText(node: RedactedNode): string | undefined {
+/** The first leaf's own text under a container, depth-first, past live values. */
+function firstLeafText(node: RedactedNode): string | undefined {
   for (const child of node.children ?? []) {
-    const own = ownText(child);
+    if (LIVE_VALUE_ROLES.has(child.role ?? '')) continue;
+    const own = (child.children?.length ?? 0) === 0 ? (child.text ?? child.name ?? '').trim() : '';
     if (own !== '') return own;
-    const deeper = firstText(child);
+    const deeper = firstLeafText(child);
     if (deeper !== undefined) return deeper;
   }
   return undefined;
-}
-
-/**
- * A node's text before its first child's: a `<p>` whose text reads
- * "Count: 0" with the `<output>` "0" as a child reads "Count:". Falls back
- * to the whole text when no child's text starts after the node's own.
- */
-function ownText(node: RedactedNode): string {
-  const text = (node.text ?? node.name ?? '').trim();
-  const first = node.children?.find((child) => (child.text ?? '').trim() !== '')?.text?.trim();
-  const at = first === undefined ? -1 : text.indexOf(first);
-  const before = at > 0 ? text.slice(0, at).trim() : '';
-  return before === '' ? text : before;
 }
 
 /** A container's own name or text, when it has one. */

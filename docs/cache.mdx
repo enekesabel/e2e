@@ -128,8 +128,10 @@ identity. On devices, replay uses the
 
 1. Check the starting screen: it must be the same route.
 2. Find each recorded control by role, name, test id, and surrounding
-   context, and repeat its action. The runner waits for missing controls and
-   stops when a match is ambiguous.
+   context, and repeat its action. The context is the first text of the
+   control's row, list item, or region, past live values such as an
+   `<output>` count. The runner waits for missing controls and stops when a
+   match is ambiguous.
 3. Check the final route and what the original step changed: the controls
    that appeared, with their checked, selected, expanded, or pressed state,
    and the ones that went away.
@@ -171,9 +173,7 @@ page on any other origin is another route.
   step navigated to, and a bare number such as a badge are skipped the same
   way.
 - A control with no name is found by its place among the unnamed controls
-  of its kind inside the same named row, list item, or group. A container is
-  named by its first text, a node's own text before its children's, so a
-  region whose first line reads `Count: 0` is named "Count:".
+  of its kind inside the same named row, list item, or group.
 </Accordion>
 
 ## Why a step was not replayed
