@@ -16,7 +16,7 @@
  */
 
 import type { RedactedNode } from '../agent/observation.ts';
-import { containerKey, describeTarget, parentsOf } from '../agent/actions.ts';
+import { containerKey, describeTarget, liveContainerKey, parentsOf, type Placement } from '../agent/actions.ts';
 import type { TracePosition, TraceTargetDescriptor } from './trace.ts';
 
 /**
@@ -200,14 +200,16 @@ function matchingIds(
   const candidates = describeNodes(nodes);
   // A recorded container key must hold: the same "Delete" in another row is
   // a different control. Checked against the tree the candidates came from,
-  // never guessed.
+  // never guessed, read past live values or with them (`describePlacement`).
   const keyed =
     descriptor.within === undefined
       ? candidates
       : (() => {
           const parents = parentsOf(nodes);
           return candidates.filter(
-            (candidate) => containerKey(candidate.id, nodes, parents) === descriptor.within,
+            (candidate) =>
+              containerKey(candidate.id, nodes, parents) === descriptor.within ||
+              liveContainerKey(candidate.id, nodes, parents) === descriptor.within,
           );
         })();
   for (const tier of descriptorTiers(descriptor)) {
@@ -227,6 +229,29 @@ function tierMatches(tier: TraceTargetDescriptor, candidates: readonly Described
   return candidates
     .filter((candidate) => fieldsEqual(tier, candidate.descriptor, fields))
     .map((candidate) => candidate.id);
+}
+
+/**
+ * Where `node` sat when it was acted on: its container's key and, when the
+ * description still matches several controls, its place among them. A live
+ * value keys the container only when nothing else tells the node from its
+ * twins: rows that differ only by a count then miss once the count changes,
+ * where a place alone would hand the action to whichever row moved there.
+ */
+export function describePlacement(
+  node: RedactedNode,
+  nodes: ReadonlyMap<string, RedactedNode>,
+  parents: ReadonlyMap<string, string>,
+): Placement {
+  const stable = containerKey(node.ref.id, nodes, parents);
+  const position = describePosition(node, stable, nodes);
+  const twinned = position !== undefined && position.of > 1;
+  const within = (twinned ? liveContainerKey(node.ref.id, nodes, parents) : undefined) ?? stable;
+  const at = within === stable ? position : describePosition(node, within, nodes);
+  return {
+    ...(within === undefined ? {} : { within }),
+    ...(at === undefined ? {} : { position: at }),
+  };
 }
 
 /** Beyond this many twins a description is not a control set but a list; a position there would be noise. */

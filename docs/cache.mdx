@@ -128,9 +128,10 @@ identity. On devices, replay uses the
 
 1. Check the starting screen: it must be the same route.
 2. Find each recorded control by role, name, test id, and surrounding
-   context, and repeat its action. The context is the first text of the
-   control's row, list item, or region, past live values such as an
-   `<output>` count. The runner waits for missing controls and stops when a
+   context, and repeat its action. A changing value in the control's row,
+   list item, or region, such as an `<output>` count or a `role="timer"`
+   clock, is left out of that context unless nothing else tells the control
+   from its twins. The runner waits for missing controls and stops when a
    match is ambiguous.
 3. Check the final route and what the original step changed: the controls
    that appeared, with their checked, selected, expanded, or pressed state,

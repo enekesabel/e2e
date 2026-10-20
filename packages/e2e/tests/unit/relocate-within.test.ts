@@ -3,7 +3,7 @@ import type { RedactedNode } from '../../src/agent/observation.ts';
 import type { SemanticNode } from '../../src/engine/surface.ts';
 import { redacted } from '../helpers/redacted.ts';
 import { containerKey, describeAction } from '../../src/agent/actions.ts';
-import { describePosition, relocateDescriptor } from '../../src/cache/relocate.ts';
+import { describePlacement, describePosition, relocateDescriptor } from '../../src/cache/relocate.ts';
 
 const identity = (text: string): string => text;
 
@@ -38,10 +38,10 @@ describe('container keys', () => {
 
   it('never keys a container by a live value, so its control replays at another count', () => {
     // `<section aria-label="Counter"><p>Count: <output>N</output></p><button>Increment</button></section>`
-    const counter = (reading: string) => {
+    const counter = (role: string, reading: string) => {
       const nodes = new Map<string, RedactedNode>();
       const parents = new Map<string, string>();
-      const count: SemanticNode = { ref: { id: 'o', revision: 'r' }, role: 'status', name: reading, text: reading };
+      const count: SemanticNode = { ref: { id: 'o', revision: 'r' }, role, name: reading, text: reading };
       const line: SemanticNode = { ref: { id: 'p', revision: 'r' }, text: `Count: ${reading}`, children: [count] };
       const button: SemanticNode = { ref: { id: 'b', revision: 'r' }, role: 'button', name: 'Increment' };
       nodes.set('s', redacted({ ref: { id: 's', revision: 'r' }, role: 'region', name: 'Counter', children: [line, button] }));
@@ -51,11 +51,36 @@ describe('container keys', () => {
       parents.set('b', 's');
       return { nodes, parents };
     };
-    const recorded = counter('0');
-    const within = containerKey('b', recorded.nodes, recorded.parents);
-    const live = counter('7');
-    expect(containerKey('b', live.nodes, live.parents)).toBe(within);
-    expect(relocateDescriptor({ role: 'button', name: 'Increment', ...(within === undefined ? {} : { within }) }, live.nodes)).toEqual({ kind: 'found', id: 'b' });
+    for (const role of ['status', 'timer', 'marquee', 'log', 'progressbar', 'meter']) {
+      const recorded = counter(role, '0');
+      expect(describePlacement(recorded.nodes.get('b')!, recorded.nodes, recorded.parents)).toEqual({});
+      expect(relocateDescriptor({ role: 'button', name: 'Increment' }, counter(role, '7').nodes)).toEqual({ kind: 'found', id: 'b' });
+    }
+  });
+
+  it('keys twins that only a live value tells apart by that value, so a reorder finds the right one and a new count misses', () => {
+    // `<li><p>Qty: <output>N</output></p><button>Remove</button></li>`: nothing but the count differs between rows.
+    const rows = (counts: readonly string[]) => {
+      const nodes = new Map<string, RedactedNode>();
+      const parents = new Map<string, string>();
+      for (const count of counts) {
+        const value: SemanticNode = { ref: { id: `o-${count}`, revision: 'r' }, role: 'status', name: count, text: count };
+        const line: SemanticNode = { ref: { id: `p-${count}`, revision: 'r' }, text: `Qty: ${count}`, children: [value] };
+        const button: SemanticNode = { ref: { id: `b-${count}`, revision: 'r' }, role: 'button', name: 'Remove', text: 'Remove' };
+        nodes.set(`li-${count}`, redacted({ ref: { id: `li-${count}`, revision: 'r' }, role: 'listitem', children: [line, button] }));
+        for (const node of [value, line, button]) nodes.set(node.ref.id, redacted(node));
+        parents.set(`o-${count}`, `p-${count}`);
+        parents.set(`p-${count}`, `li-${count}`);
+        parents.set(`b-${count}`, `li-${count}`);
+      }
+      return { nodes, parents };
+    };
+    const recorded = rows(['2', '5']);
+    const placement = describePlacement(recorded.nodes.get('b-5')!, recorded.nodes, recorded.parents);
+    expect(placement).toEqual({ within: '5' });
+    const descriptor = { role: 'button', name: 'Remove', ...placement };
+    expect(relocateDescriptor(descriptor, rows(['5', '2']).nodes)).toEqual({ kind: 'found', id: 'b-5' });
+    expect(relocateDescriptor(descriptor, rows(['2', '6']).nodes)).toEqual({ kind: 'failed', failure: 'target-not-found' });
   });
 
   it('keys a row by its first text past a live value, and finds it after the value and the order change', () => {
@@ -76,10 +101,10 @@ describe('container keys', () => {
       return { nodes, parents };
     };
     const recorded = cart([['Apples', '2'], ['Pears', '2']]);
-    const within = containerKey('b-Pears', recorded.nodes, recorded.parents);
-    expect(within).toBe('Pears');
+    const placement = describePlacement(recorded.nodes.get('b-Pears')!, recorded.nodes, recorded.parents);
+    expect(placement).toEqual({ within: 'Pears' });
     const live = cart([['Pears', '3'], ['Apples', '2']]);
-    expect(relocateDescriptor({ role: 'button', name: 'Remove', within: within! }, live.nodes)).toEqual({ kind: 'found', id: 'b-Pears' });
+    expect(relocateDescriptor({ role: 'button', name: 'Remove', ...placement }, live.nodes)).toEqual({ kind: 'found', id: 'b-Pears' });
   });
 
   it('keeps a row keyed by its first leaf when a shared label precedes it', () => {
