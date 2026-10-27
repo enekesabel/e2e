@@ -1,8 +1,8 @@
 /**
  * A scripted ACP agent on stdio, for tests. `ACP_SCRIPT` is a JSON array
  * with one entry per prompt turn, or an object keyed by text the prompt
- * contains, each a list of moves: call one of the
- * client's MCP tools, ask permission for a tool of the agent's own, run one
+ * contains, each a list of moves: call one of the client's MCP tools or several at once,
+ * ask permission for a tool of the agent's own, run one
  * without asking, say something, fail the turn with a message in the error's
  * data, or hang until cancelled or for good. Every prompt and tool result is appended to `ACP_LOG` as JSON
  * lines, with the tool list the session saw, and the `E2E_` variables and
@@ -18,6 +18,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 type Move =
   /** `on` picks the target id: the newest screen line that contains it. */
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
+  /** Calls sent at once, the way an agent batches parallel tool calls. */
+  | { readonly batch: readonly { readonly call: string; readonly args?: Record<string, unknown> }[] }
   | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
   | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' }
   | { readonly say: string }
@@ -136,6 +138,10 @@ const connection = new AgentSideConnection(
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', toolCallId, title: move.ran, kind: (move.kind ?? 'read') as 'read', status: 'in_progress' } });
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: move.status ?? 'completed' } });
           log({ ran: move.ran });
+        } else if ('batch' in move) {
+          await Promise.all(
+            move.batch.map(async ({ call, args }) => log({ call, result: await mcp!.callTool({ name: call, arguments: { ...args } }) })),
+          );
         } else if ('ignoreCancel' in move) {
           await new Promise<never>(() => undefined);
         } else if ('hang' in move) {

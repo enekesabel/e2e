@@ -58,9 +58,17 @@ export interface StepSlot {
 
 /** The active step's action tools, built once per step so its screens report changes against the one before. */
 function toolsOf(active: ActiveStep): AgentTools {
-  active.tools ??= createGrammarTools(active.ctx) as AgentTools;
+  // The guard runs when a call's turn in the queue comes, so a call batched behind the verdict or a stop is skipped.
+  active.tools ??= createGrammarTools(active.ctx, { guard: (body) => (stopped(active) ? Promise.resolve(STEP_ENDED) : body()) }) as AgentTools;
   return active.tools;
 }
+
+/** Whether the step takes no more actions: concluded, halted by a runtime error, or stopped for a tool of the agent's own. */
+function stopped(active: ActiveStep): boolean {
+  return active.conclusion.concluded() || active.halted !== undefined || active.denied !== undefined;
+}
+
+const STEP_ENDED = 'The step has ended. Wait for the next instruction.';
 
 /** Runs one tool and returns what it answered. */
 async function run(tools: AgentTools, name: string, input: unknown): Promise<ScreenOutput> {
@@ -85,7 +93,7 @@ export function missingTools(active: ActiveStep, listed: readonly ServedTool[]):
 export function stepTools(slot: StepSlot, first: StepExecutorContext): ServedTool[] {
   const current = (name: string): ActiveStep => {
     const active = slot.active;
-    if (active === undefined || active.conclusion.concluded() || active.halted !== undefined || active.denied !== undefined) {
+    if (active === undefined || stopped(active)) {
       throw new Error('No step is active. Wait for the next instruction.');
     }
     active.calls.push(name);

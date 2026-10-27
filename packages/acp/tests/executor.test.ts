@@ -189,6 +189,17 @@ describe('acpExecutor', () => {
     expect(String(log().find((entry) => 'prompt' in entry)?.['prompt'])).toContain('Verdict rules:');
   });
 
+  it('skips actions batched behind the verdict', async () => {
+    const { executor, log } = scripted([[{ batch: [{ call: 'type', args: { target: 'n1', value: 'Buy milk' } }, { call: 'tap', args: { target: 'n2' } }, pass] }]]);
+    const step = context();
+    cleanups.push(step.end);
+    // The type is still running when complete_step concludes; the tap queued behind it.
+    step.type.mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 200)));
+    await expect(executor.runStep(step.ctx)).resolves.toEqual({ status: 'passed', summary: 'added' });
+    expect(step.tap).not.toHaveBeenCalled();
+    expect(JSON.stringify(log().find((entry) => entry['call'] === 'tap'))).toContain('The step has ended.');
+  });
+
   it("rejects the agent's own tools", async () => {
     const { executor, log } = scripted([[{ own: 'Bash: ls ~', kind: 'execute' }, pass]]);
     const step = context();
