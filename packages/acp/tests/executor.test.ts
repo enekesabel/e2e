@@ -279,6 +279,23 @@ describe('acpExecutor', () => {
     await expect(executor.runStep(second.ctx)).resolves.toMatchObject({ status: 'passed' });
   });
 
+  it('sends no prompt for a step that ended while its screen was read', async () => {
+    const { executor, log } = scripted([[pass]]);
+    const first = context();
+    cleanups.push(first.end);
+    const observe = vi.mocked(first.ctx.observe);
+    const look = observe.getMockImplementation()!;
+    observe.mockImplementationOnce(async (request) => {
+      first.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+      return look(request);
+    });
+    await expect(executor.runStep(first.ctx)).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+    // The next step's prompt is the agent's first turn.
+    const second = context({ attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    await expect(executor.runStep(second.ctx)).resolves.toMatchObject({ status: 'passed' });
+    expect(log().filter((entry) => 'prompt' in entry)).toHaveLength(1);
+  });
+
   it('gives up on a session whose agent never stops the turn of a step that ended', async () => {
     const { executor } = scripted([[{ ignoreCancel: true }], [pass]]);
     const first = context();
