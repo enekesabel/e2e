@@ -146,7 +146,12 @@ declares secrets and the target's engine can fill them, the agent fills one
 with `type_secret`, and the runner authorizes the fill and types the value
 itself, the same as for the built-in agent. The agent's process does not
 get the `E2E_SECRET_*` and `E2E_USER_*` variables; it gets every other
-variable of the runner's environment.
+variable of the runner's environment. e2e removes variables by name, not by
+value, so a secret your config reads from another variable
+(`secrets: { apiKey: process.env.API_KEY }`), or the variable an
+`E2E_SECRET_*` value was copied from, still reaches the agent. Keep secrets
+only in their `E2E_SECRET_*` and `E2E_USER_*` variables when you run steps
+on an ACP agent.
 
 ## Containment
 
