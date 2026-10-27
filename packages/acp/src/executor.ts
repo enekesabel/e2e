@@ -168,6 +168,8 @@ function hold(ctx: StepExecutorContext, launch: () => Promise<AgentLaunch>, memo
     () => {
       closed = true;
       session?.close();
+      // Serial members share one memory, each with its own attempt: the next one starts its own session.
+      if (ctx.attempt.memory.get(memoryKey) === held) ctx.attempt.memory.delete(memoryKey);
     },
     { once: true },
   );

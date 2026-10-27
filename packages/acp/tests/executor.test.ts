@@ -142,6 +142,19 @@ describe('acpExecutor', () => {
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 
+  it('starts a fresh session for the next member of a serial group', async () => {
+    const { executor, log } = scripted([[pass], [pass]]);
+    const first = context();
+    await executor.runStep(first.ctx);
+    first.end();
+    // Serial members share the group's memory, each with an attempt of its own.
+    const next = attemptOf();
+    const second = context({ attempt: { attempt: { ...next.attempt, memory: first.ctx.attempt.memory }, end: next.end } });
+    cleanups.push(second.end);
+    await expect(executor.runStep(second.ctx)).resolves.toMatchObject({ status: 'passed' });
+    expect(log().filter((entry) => 'session' in entry)).toHaveLength(2);
+  });
+
   it('refuses actions that change the screen on an assertion, and lets it hover', async () => {
     const { executor, log } = scripted([
       [{ call: 'tap', args: { target: 'n2' } }, { call: 'hover', args: { target: 'n2' } }, { call: 'complete_step', args: { status: 'failed', summary: 'no todo' } }],
