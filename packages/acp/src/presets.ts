@@ -11,10 +11,17 @@ import { createRequire } from 'node:module';
 import { dirname, join, parse } from 'node:path';
 import { promisify } from 'node:util';
 import { ConfigurationError } from 'e2e/engine';
+import { z } from 'zod';
 import type { AgentLaunch } from './session.ts';
 import type { AcpAgentOptions } from './types.ts';
 
 const execFileAsync = promisify(execFile);
+
+/** What `codex mcp list --json` prints, as far as the preset reads it. */
+const CodexServerList = z.array(z.object({ name: z.string() }));
+
+/** The `bin` field of a package manifest. */
+const PackageBin = z.object({ bin: z.union([z.string(), z.record(z.string(), z.string())]).optional() });
 
 /** Claude Code with no built-in tools, no user or project settings or MCP servers, and no saved session. */
 export function claudeCodeLaunch(options: AcpAgentOptions): () => Promise<AgentLaunch> {
@@ -108,7 +115,7 @@ async function codexServers(adapter: string, env: Readonly<Record<string, string
       env: { ...process.env, ...env },
       timeout: 30_000,
     });
-    return (JSON.parse(stdout) as { name: string }[]).map((server) => server.name);
+    return CodexServerList.parse(JSON.parse(stdout)).map((server) => server.name);
   } catch (error) {
     throw new Error(`could not list your Codex MCP servers to turn them off: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
@@ -136,8 +143,9 @@ function adapterBin(name: string, bin: string): string {
 }
 
 function binOf(pkg: string, bin: string): string {
-  const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')) as { bin?: string | Record<string, string> };
-  const path = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.[bin];
+  const manifest = PackageBin.safeParse(JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')));
+  const declared = manifest.success ? manifest.data.bin : undefined;
+  const path = typeof declared === 'string' ? declared : declared?.[bin];
   if (path === undefined) throw new ConfigurationError('INVALID_CONFIG', `${pkg} has no ${bin} command`);
   return join(pkg, path);
 }
