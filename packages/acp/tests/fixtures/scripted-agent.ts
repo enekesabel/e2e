@@ -33,7 +33,8 @@ type Move =
   | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' | 'in_progress' }
   | { readonly say: string }
   | { readonly fail: string }
-  | { readonly hang: true }
+  /** `thenRan` runs a tool of the agent's own without asking once the turn is cancelled, before the turn ends. */
+  | { readonly hang: true; readonly thenRan?: string }
   | { readonly ignoreCancel: true };
 
 /** Moves per turn in order, or per step: the moves of the first key the prompt contains. */
@@ -164,6 +165,13 @@ const connection = new AgentSideConnection(
             await new Promise<void>((resolve) => {
               cancelled = resolve;
             });
+          }
+          if (move.thenRan !== undefined) {
+            await client.sessionUpdate({
+              sessionId: 's1',
+              update: { sessionUpdate: 'tool_call', toolCallId: `ran-${turn}-${move.thenRan}`, title: move.thenRan, kind: 'read', status: 'in_progress' },
+            });
+            log({ ran: move.thenRan });
           }
           return { stopReason: 'cancelled' };
         } else {

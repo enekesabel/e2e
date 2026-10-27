@@ -110,7 +110,12 @@ function executor(name: string, options: AcpAgentOptions, launch: () => Promise<
       if (!ctx.signal.aborted) recordTurn(ctx, session, report);
       if (active.halted !== undefined) throw active.halted;
       ctx.signal.throwIfAborted();
-      if (active.denied !== undefined) return ownToolUsed(active.denied);
+      if (active.denied !== undefined) {
+        // The conversation holds what the tool read: the next step starts a fresh agent.
+        session.close();
+        ctx.attempt.memory.delete(memoryKey);
+        return ownToolUsed(active.denied);
+      }
       return verdictOf(active) ?? noConclusion(report);
     },
   };
@@ -145,7 +150,12 @@ function hold(ctx: StepExecutorContext, launch: () => Promise<AgentLaunch>, memo
   const slot: StepSlot = { active: undefined, halt: () => session?.cancel() };
   const tools = stepTools(slot, ctx);
   const ownTool = (title: string) => {
-    if (slot.active === undefined) return;
+    if (slot.active === undefined) {
+      // Run in the tail of a step that already ended: no step to fail, so no later step gets this conversation.
+      session?.close();
+      if (ctx.attempt.memory.get(memoryKey) === held) ctx.attempt.memory.delete(memoryKey);
+      return;
+    }
     slot.active.denied ??= title;
     session?.cancel();
   };

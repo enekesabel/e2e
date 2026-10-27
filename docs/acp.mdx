@@ -160,7 +160,9 @@ system or terminal access to it. When the agent asks permission for a tool,
 calls of the step tools are allowed and anything else is rejected. When a
 tool of the agent's own runs without asking, e2e stops the turn and fails
 the step with `POLICY_DENIED` as soon as the agent reports the tool
-started, and the step tools take no action after it.
+started, and the step tools take no action after it. The agent's session
+closes with it, so the next step starts a fresh agent that never saw what
+the tool read.
 
 Each preset also turns off the agent's own tools that run without asking:
 

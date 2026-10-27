@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 /** A scripted agent: one list of moves per prompt turn, and the log it writes. */
-function scripted(turns: unknown[][], extra: Partial<AcpExecutorOptions> = {}) {
+function scripted(turns: unknown[][] | Record<string, unknown[]>, extra: Partial<AcpExecutorOptions> = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'e2e-acp-test-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const logFile = join(directory, 'agent.jsonl');
@@ -218,6 +218,30 @@ describe('acpExecutor', () => {
     expect(step.type).not.toHaveBeenCalled();
     expect(log()).toContainEqual({ cancelled: true });
     expect(step.transcripts.join('\n')).toContain("tools of the agent's own that ran without asking: Read ~/.env");
+  });
+
+  it("starts a fresh agent for the next step after a tool of the agent's own ran", async () => {
+    const { executor, log } = scripted([[{ ran: 'Read ~/.env', kind: 'read' }, pass], [pass]]);
+    const first = context();
+    cleanups.push(first.end);
+    await expect(executor.runStep(first.ctx)).resolves.toMatchObject({ errorCode: 'POLICY_DENIED' });
+    const second = context({ attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    await executor.runStep(second.ctx);
+    expect(log().filter((entry) => 'session' in entry)).toHaveLength(2);
+  });
+
+  it("starts a fresh agent for the next step after a tool of the agent's own ran once its step ended", async () => {
+    const { executor, log } = scripted({ 'Step: add a todo': [{ hang: true, thenRan: 'Read ~/.env' }], 'Assertion: add a todo': [pass] });
+    const first = context();
+    cleanups.push(first.end);
+    const run = executor.runStep(first.ctx);
+    await vi.waitFor(() => expect(log().filter((entry) => 'prompt' in entry)).toHaveLength(1));
+    first.abortStep(new AgentError('STEP_TIMEOUT', 'the step timed out'));
+    await expect(run).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+    await vi.waitFor(() => expect(log()).toContainEqual({ ran: 'Read ~/.env' }));
+    const second = context({ kind: 'assert', attempt: { attempt: first.ctx.attempt as never, end: first.end } });
+    await expect(executor.runStep(second.ctx)).resolves.toMatchObject({ status: 'passed' });
+    expect(log().filter((entry) => 'session' in entry)).toHaveLength(2);
   });
 
   it('fails a step whose own tool ran without asking, even when the tool failed', async () => {
