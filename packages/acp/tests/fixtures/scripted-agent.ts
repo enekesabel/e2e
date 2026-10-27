@@ -46,7 +46,7 @@ const log = (entry: unknown) => {
 };
 
 log({ pid: process.pid });
-log({ env: Object.keys(process.env).filter((name) => name.startsWith('E2E_')).toSorted(), codexConfig: process.env['CODEX_CONFIG'] ?? null });
+log({ env: Object.keys(process.env).filter((name) => name.toUpperCase().startsWith('E2E_')).toSorted(), codexConfig: process.env['CODEX_CONFIG'] ?? null });
 
 let mcp: Client | undefined;
 /** The screen lines the agent read this turn, newest first: each tool result's changes, then the prompt's screen. */

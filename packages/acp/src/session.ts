@@ -37,8 +37,8 @@ const BUILT_IN_KINDS = new Set(['read', 'edit', 'delete', 'move', 'search', 'exe
 /** ACP's error code for a request the agent refuses until the user signs in. */
 const AUTH_REQUIRED = -32000;
 
-/** Variables e2e reads secret and credential values from: the agent never needs them. */
-const SECRET_VARIABLE = /^E2E_(?:SECRET|USER)_/;
+/** Variables e2e reads secret and credential values from: the agent never needs them. Any case, since Windows reads names that way. */
+const SECRET_VARIABLE = /^E2E_(?:SECRET|USER)_/i;
 
 /** How to start one agent and what its session gets. */
 export interface AgentLaunch {
@@ -243,7 +243,7 @@ export async function startSession(
 }
 
 /** The agent's environment without the variables e2e reads secrets from, wherever they came from. */
-function withoutSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function withoutSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !SECRET_VARIABLE.test(name)));
 }
 

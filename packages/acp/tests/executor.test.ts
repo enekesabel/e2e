@@ -375,7 +375,7 @@ describe('acpExecutor', () => {
   });
 
   it("keeps e2e's secret and credential variables from the agent", async () => {
-    for (const [name, value] of [['E2E_SECRET_STRIPE_KEY', 'sk_test_value'], ['E2E_USER_ADMIN_PASSWORD', 'hunter2']] as const) {
+    for (const [name, value] of [['E2E_SECRET_STRIPE_KEY', 'sk_test_value'], ['E2E_USER_ADMIN_PASSWORD', 'hunter2'], ['e2e_secret_lower', 'lower']] as const) {
       const before = process.env[name];
       process.env[name] = value;
       cleanups.push(() => {
@@ -390,7 +390,7 @@ describe('acpExecutor', () => {
     await executor.runStep(step.ctx);
     const env = log().find((entry) => 'env' in entry)?.['env'] as string[];
     expect(env).toContain('E2E_TELEMETRY_DISABLED');
-    expect(env.filter((name) => name.startsWith('E2E_SECRET_') || name.startsWith('E2E_USER_'))).toEqual([]);
+    expect(env.filter((name) => /^E2E_(?:SECRET|USER)_/i.test(name))).toEqual([]);
   });
 
   it('fails with STEP_NO_CONCLUSION when the turn ends without complete_step', async () => {

@@ -12,7 +12,7 @@ import { dirname, join, parse } from 'node:path';
 import { promisify } from 'node:util';
 import { ConfigurationError } from 'e2e/engine';
 import { z } from 'zod';
-import type { AgentLaunch } from './session.ts';
+import { withoutSecrets, type AgentLaunch } from './session.ts';
 import type { AcpAgentOptions } from './types.ts';
 
 const execFileAsync = promisify(execFile);
@@ -112,7 +112,7 @@ async function codexServers(adapter: string, env: Readonly<Record<string, string
       : [codexPath, []];
   try {
     const { stdout } = await execFileAsync(command, [...args, 'mcp', 'list', '--json'], {
-      env: { ...process.env, ...env },
+      env: withoutSecrets({ ...process.env, ...env }),
       timeout: 30_000,
     });
     return CodexServerList.parse(JSON.parse(stdout)).map((server) => server.name);

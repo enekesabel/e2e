@@ -90,12 +90,12 @@ describe('agent presets', () => {
   it("starts Codex read-only with its own tools and the user's MCP servers off", async () => {
     const directory = project(['@agentclientprotocol/codex-acp']);
     const log = join(directory, 'agent.jsonl');
-    // Stands in for the Codex the adapter runs, which lists the user's MCP servers.
+    // Stands in for the Codex the adapter runs, which lists the user's MCP servers, and none when it gets a secret.
     const codex = join(directory, 'codex');
-    writeFileSync(codex, `#!/bin/sh\n[ "$1 $2 $3" = "mcp list --json" ] && echo '[{"name":"playwright"},{"name":"executor"}]'\n`);
+    writeFileSync(codex, `#!/bin/sh\n[ "$1 $2 $3" = "mcp list --json" ] && [ -z "$E2E_SECRET_KEY" ] && echo '[{"name":"playwright"},{"name":"executor"}]'\n`);
     chmodSync(codex, 0o755);
     const executor = inProject(directory, () =>
-      acpExecutor.codex({ env: { CODEX_PATH: codex, ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
+      acpExecutor.codex({ env: { CODEX_PATH: codex, E2E_SECRET_KEY: 'sk_test_value', ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
     );
     const entries = await runStep(executor, log);
     expect(entries).toContainEqual({ mode: 'read-only' });
