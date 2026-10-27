@@ -670,6 +670,8 @@ createToolLoopExecutor({ name: 'brain', tools: () => ({}), buildPrompt: () => 'g
 createToolLoopExecutor({ name: 'brain', system: BASE_RULES, buildPrompt: () => 'go', tools: (ctx, { guard }) => createGrammarTools(ctx, { guard }) });
 // @ts-expect-error the screen presenter stays internal: a caller's first observe shows the whole screen
 createGrammarTools(executorContext, { screen: undefined });
+// @ts-expect-error failure causes stay internal: e2e mcp counts them, a caller reads the result text
+createGrammarTools(executorContext, { onActionFailed: () => undefined });
 // An executor outside the AI SDK loop keeps the built-in verdict: complete_step as a tool, its rules as text, and the verdict it collected.
 const conclusion = createVerdictTool();
 ({ complete_step: conclusion.tool }) satisfies ToolSet;

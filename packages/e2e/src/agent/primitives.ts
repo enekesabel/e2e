@@ -205,16 +205,16 @@ export interface GrammarToolOptions {
    * instead turns it into text and ends the loop.
    */
   readonly guard?: <T>(body: () => Promise<T>) => Promise<T | string>;
+}
+
+/** The package's own callers: the options, the presenter they share with what they show the model themselves, and failure causes. */
+interface GrammarToolSetup extends GrammarToolOptions {
   /**
    * Told the cause of every action that failed into a result rather than a
    * throw, before it becomes the result's text: the one place its runner
    * code is still structured.
    */
   readonly onActionFailed?: ((cause: unknown) => void) | undefined;
-}
-
-/** The package's own callers: the options, and the presenter they share with what they show the model themselves. */
-interface GrammarToolSetup extends GrammarToolOptions {
   /**
    * Renders screens for the model and remembers what it has seen, so every
    * result after the first reports the changes rather than the whole tree.
@@ -319,11 +319,9 @@ const POINT_TOOLS: readonly {
  * that batches several actions gets one coherent result per action rather
  * than every result describing the state after the last one.
  */
-export function createGrammarTools(context: StepExecutorContext, options: GrammarToolOptions = {}): ToolSet {
-  return grammarTools(context, options);
-}
+export const createGrammarTools: (context: StepExecutorContext, options?: GrammarToolOptions) => ToolSet = grammarTools;
 
-/** `createGrammarTools` for the package's own callers, which may share a screen presenter. */
+/** `createGrammarTools` for the package's own callers, which may share a screen presenter and hear of failed actions. */
 export function grammarTools(
   context: StepExecutorContext,
   options: GrammarToolSetup = {},
