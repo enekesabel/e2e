@@ -227,6 +227,14 @@ describe('acpExecutor', () => {
     await expect(executor.runStep(step.ctx)).resolves.toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED' });
   });
 
+  it('stops a step as soon as a tool of its own starts, before the tool ends', async () => {
+    const { executor } = scripted([[{ ran: 'Task: subagent', kind: 'think', status: 'in_progress' }, { call: 'type', args: { target: 'n1', value: 'leaked' } }, pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    await expect(executor.runStep(step.ctx)).resolves.toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED' });
+    expect(step.type).not.toHaveBeenCalled();
+  });
+
   it('refuses a screenshot once a secret was filled, before the engine is asked for pixels', async () => {
     const { executor, log } = scripted([[{ call: 'screenshot' }, pass]]);
     const step = context();

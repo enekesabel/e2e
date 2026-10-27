@@ -21,7 +21,8 @@ type Move =
   /** Calls sent at once, the way an agent batches parallel tool calls. */
   | { readonly batch: readonly { readonly call: string; readonly args?: Record<string, unknown> }[] }
   | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
-  | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' }
+  /** `in_progress` leaves the tool running for the rest of the turn. */
+  | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' | 'in_progress' }
   | { readonly say: string }
   | { readonly fail: string }
   | { readonly hang: true }
@@ -136,7 +137,9 @@ const connection = new AgentSideConnection(
           // A tool of the agent's own that runs without asking.
           const toolCallId = `ran-${turn}-${move.ran}`;
           await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call', toolCallId, title: move.ran, kind: (move.kind ?? 'read') as 'read', status: 'in_progress' } });
-          await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: move.status ?? 'completed' } });
+          if (move.status !== 'in_progress') {
+            await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId, status: move.status ?? 'completed' } });
+          }
           log({ ran: move.ran });
         } else if ('batch' in move) {
           await Promise.all(

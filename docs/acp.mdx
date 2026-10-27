@@ -157,7 +157,8 @@ session opens in an empty temporary directory, and e2e advertises no file
 system or terminal access to it. When the agent asks permission for a tool,
 calls of the step tools are allowed and anything else is rejected. When a
 tool of the agent's own runs without asking, e2e stops the turn and fails
-the step with `POLICY_DENIED`.
+the step with `POLICY_DENIED` as soon as the agent reports the tool
+started, and the step tools take no action after it.
 
 Each preset also turns off the agent's own tools that run without asking:
 

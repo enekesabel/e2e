@@ -89,7 +89,7 @@ export interface AcpSession {
  * Starts the agent, initializes it, and opens a session with the tools.
  * Aborting `signal` before the session is open stops the agent and the tool
  * server and rejects. `onOwnTool` hears of every tool of the agent's own
- * that ran without asking, as it completes.
+ * that runs without asking, as soon as it starts or finishes.
  */
 export async function startSession(
   launch: AgentLaunch,
@@ -301,9 +301,10 @@ function observe(
       const { sessionUpdate: _, ...fields } = update;
       const call = { ...calls.get(update.toolCallId), ...defined(fields) };
       calls.set(update.toolCallId, call);
-      // A call of the agent's own that finished, done or failed, without a permission we rejected ran without asking.
-      const finished = call.status === 'completed' || call.status === 'failed';
-      const ran = finished && !turn.own.rejected.has(update.toolCallId) && !turn.own.ran.has(update.toolCallId);
+      // A call of the agent's own that started or finished without a permission we rejected ran without asking:
+      // caught when it starts, so a long one cannot feed what it read to the step tools before it ends.
+      const started = call.status === 'in_progress' || call.status === 'completed' || call.status === 'failed';
+      const ran = started && !turn.own.rejected.has(update.toolCallId) && !turn.own.ran.has(update.toolCallId);
       if (ran && !isOurs(call, undefined, ours)) {
         const title = titleOf(call);
         turn.own.ran.set(update.toolCallId, title);
