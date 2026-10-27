@@ -68,8 +68,13 @@ export interface TurnReport {
   readonly ran: readonly string[];
 }
 
-/** A turn's tool calls of the agent's own, by call id: the ones rejected when they asked, and the ones that ran anyway. */
+/**
+ * A turn's tool calls by call id: the step tools' calls allowed when they
+ * asked, and of the agent's own, the ones rejected when they asked and the
+ * ones that ran anyway.
+ */
 interface OwnCalls {
+  readonly allowed: Set<string>;
   readonly rejected: Map<string, string>;
   readonly ran: Map<string, string>;
 }
@@ -131,7 +136,7 @@ export async function startSession(
 
   const ours = new Set(tools.map((tool) => tool.name));
   const calls = new Map<string, Partial<ToolCallUpdate>>();
-  const turn: TurnState = { cost: undefined, text: '', own: { rejected: new Map(), ran: new Map() } };
+  const turn: TurnState = { cost: undefined, text: '', own: { allowed: new Set(), rejected: new Map(), ran: new Map() } };
   const client: Client = {
     requestPermission: (params) => answerPermission(params, ours, calls, turn.own),
     sessionUpdate: (params) => observe(params, ours, calls, turn, onOwnTool),
@@ -204,7 +209,7 @@ export async function startSession(
     agentName: initialize.agentInfo?.name,
     async prompt(text) {
       turn.text = '';
-      turn.own = { rejected: new Map(), ran: new Map() };
+      turn.own = { allowed: new Set(), rejected: new Map(), ran: new Map() };
       const costBefore = turn.cost;
       const started = Date.now();
       const response = await Promise.race([connection.prompt({ sessionId, prompt: [{ type: 'text', text }] }), exited]).catch((error: unknown) => {
@@ -304,7 +309,8 @@ function observe(
       // A call of the agent's own that started or finished without a permission we rejected ran without asking:
       // caught when it starts, so a long one cannot feed what it read to the step tools before it ends.
       const started = call.status === 'in_progress' || call.status === 'completed' || call.status === 'failed';
-      const ran = started && !turn.own.rejected.has(update.toolCallId) && !turn.own.ran.has(update.toolCallId);
+      const { allowed, rejected, ran: already } = turn.own;
+      const ran = started && !allowed.has(update.toolCallId) && !rejected.has(update.toolCallId) && !already.has(update.toolCallId);
       if (ran && !isOurs(call, undefined, ours)) {
         const title = titleOf(call);
         turn.own.ran.set(update.toolCallId, title);
@@ -332,7 +338,9 @@ function answerPermission(
 ): RequestPermissionResponse {
   const toolCall = { ...calls.get(params.toolCall.toolCallId), ...defined(params.toolCall) };
   const allowed = isOurs(toolCall, params['_meta'] ?? undefined, ours);
-  if (!allowed) own.rejected.set(params.toolCall.toolCallId, titleOf(toolCall));
+  // Remembered, since the call's later updates may not carry what the request named it by.
+  if (allowed) own.allowed.add(params.toolCall.toolCallId);
+  else own.rejected.set(params.toolCall.toolCallId, titleOf(toolCall));
   const kinds = allowed ? ['allow_once', 'allow_always'] : ['reject_once', 'reject_always'];
   const option = kinds.map((kind) => params.options.find((entry) => entry.kind === kind)).find((entry) => entry !== undefined);
   return option === undefined ? { outcome: { outcome: 'cancelled' } } : { outcome: { outcome: 'selected', optionId: option.optionId } };

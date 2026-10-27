@@ -20,7 +20,15 @@ type Move =
   | { readonly call: string; readonly on?: string; readonly args?: Record<string, unknown> }
   /** Calls sent at once, the way an agent batches parallel tool calls. */
   | { readonly batch: readonly { readonly call: string; readonly args?: Record<string, unknown> }[] }
-  | { readonly own: string; readonly kind?: string; readonly rawInput?: Record<string, unknown>; readonly meta?: Record<string, unknown> }
+  /** `requestMeta` goes on the permission request only; `status` is reported for the call after the answer. */
+  | {
+      readonly own: string;
+      readonly kind?: string;
+      readonly rawInput?: Record<string, unknown>;
+      readonly meta?: Record<string, unknown>;
+      readonly requestMeta?: Record<string, unknown>;
+      readonly status?: 'completed';
+    }
   /** `in_progress` leaves the tool running for the rest of the turn. */
   | { readonly ran: string; readonly kind?: string; readonly status?: 'completed' | 'failed' | 'in_progress' }
   | { readonly say: string }
@@ -127,12 +135,16 @@ const connection = new AgentSideConnection(
           const answer = await client.requestPermission({
             sessionId: 's1',
             toolCall,
+            ...(move.requestMeta === undefined ? {} : { _meta: move.requestMeta }),
             options: [
               { optionId: 'yes', name: 'Allow', kind: 'allow_once' },
               { optionId: 'no', name: 'Reject', kind: 'reject_once' },
             ],
           });
           log({ permission: move.own, outcome: answer.outcome });
+          if (move.status !== undefined) {
+            await client.sessionUpdate({ sessionId: 's1', update: { sessionUpdate: 'tool_call_update', toolCallId: toolCall.toolCallId, status: move.status } });
+          }
         } else if ('ran' in move) {
           // A tool of the agent's own that runs without asking.
           const toolCallId = `ran-${turn}-${move.ran}`;

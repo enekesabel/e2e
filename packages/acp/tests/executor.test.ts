@@ -323,6 +323,16 @@ describe('acpExecutor', () => {
     expect(outcomes).toEqual(Object.fromEntries(asks.map((ask) => [ask.own, ask.allowed])));
   });
 
+  it('keeps a call allowed by its permission request from counting as one of its own once it completes', async () => {
+    // Named as an MCP call on the request only; the call itself looks like a shell command.
+    const call = { own: 'e2e_step.tap', kind: 'execute', rawInput: { server: 'e2e_step', tool: 'tap', arguments: { target: 'n2' } } };
+    const { executor, log } = scripted([[{ ...call, requestMeta: { is_mcp_tool_approval: true }, status: 'completed' }, pass]]);
+    const step = context();
+    cleanups.push(step.end);
+    await expect(executor.runStep(step.ctx)).resolves.toEqual({ status: 'passed', summary: 'added' });
+    expect(log()).toContainEqual({ permission: 'e2e_step.tap', outcome: { outcome: 'selected', optionId: 'yes' } });
+  });
+
   it("keeps e2e's secret and credential variables from the agent", async () => {
     for (const [name, value] of [['E2E_SECRET_STRIPE_KEY', 'sk_test_value'], ['E2E_USER_ADMIN_PASSWORD', 'hunter2']] as const) {
       const before = process.env[name];
