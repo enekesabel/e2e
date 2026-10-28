@@ -18,18 +18,25 @@ import { clampToViewport, requireFinitePoint, viewportShare } from '../internal/
 import { resolveNavigationUrl } from '../internal/urls.ts';
 import type { ActionHook, BeforeActionHook, ClickOptions, JsonValue, Momentum, ScrollDirection, Secret } from '../types.ts';
 import { PROJECT_TOOL_EVENT_PREFIX, type GrammarActionName } from './action-names.ts';
-import { describeAction, type Placement, type RecordableAction } from './actions.ts';
+import { describeAction, type PlacedPoint, type Placement, type RecordableAction } from './actions.ts';
 import { describePlacement } from '../cache/relocate.ts';
 import { isTapActionName, type NodeActionName, type PointActionName, type RecordedAction } from '../cache/trace.ts';
 import { derivedReason } from './derived.ts';
 import { ActionHookError, AgentError, toAgentError } from './error.ts';
-import { RUNTIME_CODES, type ExecutorActions, type ExecutorTarget, type PointHit, type PointTapResult } from './executor.ts';
+import {
+  RUNTIME_CODES,
+  type ExecutorActions,
+  type ExecutorTarget,
+  type PointDragResult,
+  type PointHit,
+  type PointTapResult,
+} from './executor.ts';
 import type { AgentContext } from './invocation.ts';
 import type { ObservationFeed, Resolved } from './observation-feed.ts';
 import { resolveScrollTarget } from './scroll-target.ts';
 import type { OperationQueue } from './operation-queue.ts';
 import { instrumentPhase, recordPolicyEvent } from './phases.ts';
-import { describePointAction, describePointHit, hitTest, POINT_VERBS, type PointProse } from './point-tap.ts';
+import { describePointAction, describePointDrag, describePointHit, hitTest, POINT_VERBS, type PointProse } from './point-tap.ts';
 import { nodeReading, normalizeReading, readingShape } from './reading.ts';
 import type { AgentObservation, RedactedNode, SemanticAgentObservation } from './observation.ts';
 import { authorizeSecretFill } from './secrets.ts';
@@ -153,6 +160,7 @@ export class ActionDispatcher {
       back: () => this.back(),
       tapAt: (point) => this.pointVerb('tapAt', point),
       hoverAt: (point) => this.pointVerb('hoverAt', point),
+      dragAt: (from, to) => this.pointDrag(from, to),
       hitTest: (point) => this.hitTest(point),
       typeText: (value, typing) => this.typeText(value, typing?.replace === true),
       pressKey: (key) => this.pressKey(key),
@@ -257,20 +265,87 @@ export class ActionDispatcher {
           `the point (${String(clamped.x)}, ${String(clamped.y)}) is on nothing the screen lists and this engine ${nodeVerb}s listed nodes only; ${nodeVerb} a node by id instead`,
         );
       }
-      // The node whose box contained the point is the trace's handle on it;
-      // the tree's root is the page itself and follows no layout shift.
-      const under = hit.under === undefined || (observation.kind === 'semantic' && hit.under.ref.id === observation.tree.ref.id) ? undefined : hit.under;
+      const handle = this.traceHandle(observation, hit.under);
       await this.runActionNow(verb, async () => {
         await this.session.performAt(clamped, { kind: nodeVerb }, this.accounting.actionOperation());
         return {
           name: verb,
           point: clamped,
           viewport: { width: observation.viewport.width, height: observation.viewport.height },
-          // Its container and place among twins tell this row's node from the next row's on replay.
-          ...(under === undefined || observation.kind !== 'semantic' ? {} : { under, ...this.placementOf({ node: under, observation }) }),
+          ...handle,
         };
       });
       return { point: clamped, ...(hit.control === undefined ? {} : { target: { id: hit.control.ref.id } }), summary };
+    });
+  }
+
+  /**
+   * Drags from one viewport point to another in queue order against the
+   * newest observation, the way a point verb taps one. The engine gets the
+   * bare points through its `dragTo` pointer kind, where the model aimed,
+   * and the trace keeps each inside the node under it. An engine that takes
+   * no bare drag gets the two different listed, enabled controls holding
+   * the ends, joined by id like `drag`. Both points are clamped to the
+   * viewport first.
+   */
+  private pointDrag(from: ViewportPoint, to: ViewportPoint): Promise<PointDragResult> {
+    requireFinitePoint(from, 'dragAt');
+    requireFinitePoint(to, 'dragAt');
+    return this.queue.run(async () => {
+      const observation = this.feed.requireLatest();
+      const start = clampToViewport(from, observation.viewport);
+      const end = clampToViewport(to, observation.viewport);
+      const fromHit = hitTest(observation, start);
+      const toHit = hitTest(observation, end);
+      // A drag by id runs between the controls' centers, not where the model
+      // aimed: only an engine without the bare drag gets it, and only between
+      // two controls, since a node dragged onto itself does nothing.
+      const byId =
+        !this.verbs.has('dragAt') &&
+        this.verbs.has('drag') &&
+        fromHit.control !== undefined &&
+        toHit.control !== undefined &&
+        fromHit.control.ref.id !== toHit.control.ref.id;
+      const summary = describePointDrag({
+        from: start,
+        to: end,
+        source: fromHit.control,
+        destination: toHit.control,
+        fromUnder: fromHit.under,
+        toUnder: toHit.under,
+        byId,
+        ...this.prose(observation),
+      });
+      if (byId) {
+        const source = { id: fromHit.control.ref.id };
+        const destination = { id: toHit.control.ref.id };
+        await this.runActionNow('dragTo', () => this.targeted(this.feed.resolve(source), (node) => this.dragOnto(node, destination)));
+        return { from: start, to: end, source, destination, summary };
+      }
+      if (!this.verbs.has('dragAt')) {
+        throw new TestError(
+          'UNSUPPORTED_CAPABILITY',
+          `the drag from (${String(start.x)}, ${String(start.y)}) to (${String(end.x)}, ${String(end.y)}) does not join two different controls the screen lists and this engine drags listed nodes only; drag a node onto another by id instead`,
+        );
+      }
+      const fromHandle = this.traceHandle(observation, fromHit.under);
+      const toHandle = this.traceHandle(observation, toHit.under);
+      await this.runActionNow('dragAt', async () => {
+        await this.session.performAt(start, { kind: 'dragTo', target: end }, this.accounting.actionOperation());
+        return {
+          name: 'dragAt',
+          from: { point: start, ...fromHandle },
+          to: { point: end, ...toHandle },
+          viewport: { width: observation.viewport.width, height: observation.viewport.height },
+        };
+      });
+      return {
+        from: start,
+        to: end,
+        ...(fromHit.control === undefined ? {} : { source: { id: fromHit.control.ref.id } }),
+        ...(toHit.control === undefined ? {} : { destination: { id: toHit.control.ref.id } }),
+        summary,
+      };
     });
   }
 
@@ -338,11 +413,14 @@ export class ActionDispatcher {
    * replay can tell one "Done" column from another.
    */
   private drag(source: ExecutorTarget, destination: ExecutorTarget): Promise<void> {
-    return this.commitTargeted('dragTo', source, async (node) => {
-      const dropped = this.feed.resolve(destination);
-      await this.session.perform(node.ref, { kind: 'dragTo', target: dropped.node.ref }, this.accounting.actionOperation());
-      return { name: 'drag', node, destination: { node: dropped.node, ...this.placementOf(dropped) } };
-    });
+    return this.commitTargeted('dragTo', source, (node) => this.dragOnto(node, destination));
+  }
+
+  /** The body of a node drag past the source's resolution: the drop target resolved on the same look, then the drag. */
+  private async dragOnto(node: RedactedNode, destination: ExecutorTarget): Promise<RecordableAction> {
+    const dropped = this.feed.resolve(destination);
+    await this.session.perform(node.ref, { kind: 'dragTo', target: dropped.node.ref }, this.accounting.actionOperation());
+    return { name: 'drag', node, destination: { node: dropped.node, ...this.placementOf(dropped) } };
   }
 
   /**
@@ -738,6 +816,18 @@ export class ActionDispatcher {
    */
   private placementOf({ node, observation }: Resolved): Placement {
     return describePlacement(node, observation.nodes, observation.parents);
+  }
+
+  /**
+   * The trace's handle on a bare point: the listed node whose box contained
+   * it, with where that node sat, so its container and place among twins
+   * tell this row's node from the next row's on replay. Nothing on a screen
+   * without a tree, or on the tree's root, which is the page itself and
+   * follows no layout shift.
+   */
+  private traceHandle(observation: AgentObservation, under: RedactedNode | undefined): Omit<PlacedPoint, 'point'> {
+    if (under === undefined || observation.kind !== 'semantic' || under.ref.id === observation.tree.ref.id) return {};
+    return { under, ...this.placementOf({ node: under, observation }) };
   }
 
   /** The seam a policy records its decisions through, onto this step's events. */

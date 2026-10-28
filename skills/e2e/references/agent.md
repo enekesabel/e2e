@@ -152,15 +152,17 @@ The tools, one per engine action. Name the target as the screen names it
   Offered only when the step declares secrets and the engine can fill them.
 - `screenshot`: attach viewport pixels; every later result then carries one.
 - `tap_at`/`hover_at`/`press_at`/`select_at`/`type_at`: a screenshot point.
+- `drag_at`: from one screenshot point to another (`to_x`, `to_y`).
 - `dismiss_keyboard` (device): hide the on-screen keyboard.
 
 The focused field's selected text is listed as `selection="..."` (never for
 a secret), so a repeated `Shift+ArrowLeft` selects one word with visible
 feedback. Point tools serve a canvas shape, map pin, image region, or system
-sheet control. `tap_at` and `hover_at` act at the point; `press_at`,
-`select_at`, and `type_at` hit-test the tree first so a listed control
-underneath is acted on by id, and `type_at` on nothing listed taps, then
-types. A screen with
+sheet control. `tap_at`, `hover_at`, and `drag_at` act at the point
+(`drag_at` by id between two different listed controls on an engine without
+a bare-point drag); `press_at`, `select_at`, and `type_at` hit-test the
+tree first so a listed control underneath is acted on by id, and `type_at`
+on nothing listed taps, then types. A screen with
 nothing to tap by id opens with a screenshot attached. A device has no
 `right_click`, `select`, `upload`, or `scroll_to` by node id. Pixels are
 masked and withheld after a secret fill (topic writing-tests): act on pixels

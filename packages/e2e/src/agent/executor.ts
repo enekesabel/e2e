@@ -260,6 +260,17 @@ export interface ExecutorActions {
    */
   hoverAt(point: ViewportPoint): Promise<PointTapResult>;
   /**
+   * Drags from one viewport point to another, in the CSS pixels `tapAt`
+   * takes, for a drag the tree does not list: a shape on a canvas, a pin on
+   * a map, a card dropped on an empty spot. The engine gets the bare points
+   * through its `dragTo` pointer kind (`dragAt` in `target.verbs`), recorded
+   * with the viewport and each point's place inside the node under it. An
+   * engine that drags nodes only gets the two different listed, enabled
+   * controls holding the ends, dragged by id like `drag`, and fails when the
+   * points do not land on two such controls.
+   */
+  dragAt(from: ViewportPoint, to: ViewportPoint): Promise<PointDragResult>;
+  /**
    * Types into whatever holds focus, with no node resolved: the path for a
    * field the tree does not list (drawn on a canvas, flattened out of a
    * platform's accessibility tree) after a `tapAt` gave it focus. Inserts at
@@ -303,6 +314,20 @@ export interface PointTapResult {
   /** The listed, enabled control containing the point, acted on by id or at the point; absent when none is listed there. */
   readonly target?: ExecutorTarget;
   /** Prose for a model: what was acted on, or what sits under a bare point. */
+  readonly summary: string;
+}
+
+/** What one `dragAt` did, for the executor to relay to its model. */
+export interface PointDragResult {
+  /** Where the drag started, in the newest observation's CSS pixels. */
+  readonly from: ViewportPoint;
+  /** Where the drag ended, in the same pixels. */
+  readonly to: ViewportPoint;
+  /** The listed, enabled control holding the start, dragged by id or at the point; absent when none is listed there. */
+  readonly source?: ExecutorTarget;
+  /** The listed, enabled control holding the end, the same way. */
+  readonly destination?: ExecutorTarget;
+  /** Prose for a model: what was dragged where, or what sits under the bare points. */
   readonly summary: string;
 }
 

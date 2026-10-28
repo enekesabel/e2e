@@ -6,7 +6,7 @@
  * what this engine owes agent-device.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1167,6 +1167,8 @@ describe('perform', () => {
       ['capture.snapshot', { interactiveOnly: false }],
       ['interactions.fill', { ref: '@e7', text: '', settle: true, settleQuietMs: 150 }],
       ['interactions.press', { ref: '@e6', settle: true, settleQuietMs: 150 }],
+      // Enter reaches the field through the soft keyboard, so the unfocused field is tapped first.
+      ['interactions.press', { ref: '@e7', settle: true, settleQuietMs: 150 }],
       ['command.keyboard', { action: 'enter' }],
       ['interactions.press', { ref: '@e7', settle: true, settleQuietMs: 150 }],
       ['interactions.type', { text: 'a' }],
@@ -1178,6 +1180,19 @@ describe('perform', () => {
       ['interactions.scroll', { direction: 'up', settle: true, settleQuietMs: 150 }],
       ['interactions.drag', { source: '@e4', destination: '@e3' }],
     ]);
+  });
+
+  it.each(['Enter', 'a'])('sends %s to a focused field without tapping it first', async (key) => {
+    const h = harness();
+    h.fake.respond('capture.snapshot', () => ({
+      ...SETTINGS_SNAPSHOT,
+      nodes: SETTINGS_NODES.map((node) => (node.label === 'Search' ? { ...node, focused: true } : node)),
+    }));
+    await openAttempt(h);
+    const search = await observed(h, 'Search');
+    const before = h.fake.calls.length;
+    await h.engine.perform!(search.ref, { kind: 'press', key }, operation());
+    expect(h.fake.calls.slice(before).map((call) => call.method)).toEqual([key === 'Enter' ? 'command.keyboard' : 'interactions.type']);
   });
 
   it.each(['e2', ''])('presses the innermost control even when the row ref is %j', async (rowRef) => {
@@ -2311,6 +2326,22 @@ describe('video', () => {
     expect(existsSync(path.join(artifactsDir, 'video', 'video.mp4'))).toBe(true);
     await h.engine.endAttempt!(cleanup());
     expect(records(h)).toHaveLength(2);
+  });
+
+  it('records again in the same attempt once the runner moved the previous file away', async () => {
+    const h = harness();
+    recorder(h);
+    await openAttempt(h);
+    const file = path.join(artifactsDir, 'video', 'video.mp4');
+    for (const moved of ['first.mp4', 'second.mp4']) {
+      await h.engine.artifacts!.startVideo!(operation());
+      expect(await h.engine.artifacts!.stopVideo!(operation())).toEqual([{ path: path.join('video', 'video.mp4'), startedAt: expect.any(String) }]);
+      renameSync(file, path.join(artifactsDir, moved));
+    }
+    expect(records(h)).toHaveLength(4);
+    // Nothing is left recording for the attempt's end to stop.
+    await h.engine.endAttempt!(cleanup());
+    expect(records(h)).toHaveLength(4);
   });
 
   it.each([

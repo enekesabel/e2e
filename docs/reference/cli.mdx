@@ -214,7 +214,13 @@ bunx e2e init my-app --example with-expo
 
 ##### Re-running init
 
-- An existing config is kept, and no packages are added for it.
+- An existing config and existing test files stay byte-for-byte unchanged.
+  The engine and gateway answers apply to a new config only, so their
+  packages are not added. A missing example test is still created, unless
+  per-engine examples exist.
+- `package.json` and `.gitignore` are still updated with what they lack: the
+  `e2e` dev dependency, the `test:e2e` script, and the ignore entries.
+  Existing dependencies, scripts, and entries stay as they are.
 - MCP registration keeps extra settings on the e2e server, such as
   environment variables and client timeouts, even when it repairs the launch
   command. A current registration stays byte-for-byte unchanged.

@@ -21,6 +21,7 @@ import {
   type KeyModifier,
   type Locator,
   type ModelInstance,
+  type PointDragResult,
   type PointHit,
   type PointTapResult,
   type PollExpectation,
@@ -123,6 +124,16 @@ declare const asyncExpectation: AsyncExpectation;
 declare const screen: Screen;
 declare const engine: EngineHandle;
 declare const targets: readonly Target[];
+
+void (async () => {
+  await appFixture.startRecording({ name: 'dialog' });
+  const [video] = await appFixture.stopRecording();
+  // A recording returns at least one video, so the first needs no undefined check.
+  if ('path' in video) video.path satisfies string;
+  else video.url satisfies string;
+  // @ts-expect-error a video is a file or a link; narrow before reading the path
+  void video.path;
+})();
 
 void (screen.tree() satisfies Promise<string>);
 void (screen.debug({ timeout: 1000 }) satisfies Promise<void>);
@@ -370,6 +381,7 @@ executorContext.attempt.titlePath satisfies readonly string[];
 'tapAt' satisfies ExecutorVerb;
 'hover' satisfies ExecutorVerb;
 'drag' satisfies ExecutorVerb;
+'dragAt' satisfies ExecutorVerb;
 'upload' satisfies ExecutorVerb;
 'back' satisfies ExecutorVerb;
 // @ts-expect-error a verb is one of the action grammar's names
@@ -515,6 +527,9 @@ screen.getByRole('button', { hidden: true });
 declare const point: import('../../src/types.ts').Point;
 void (executorContext.actions.tapAt(point) satisfies Promise<PointTapResult>);
 void (executorContext.actions.hitTest(point) satisfies Promise<PointHit>);
+void (executorContext.actions.dragAt(point, point) satisfies Promise<PointDragResult>);
+// @ts-expect-error a point drag names both ends
+void executorContext.actions.dragAt(point);
 void screen.tapAt(point, { timeout: 1_000 });
 void screen.swipe({ direction: 'up', momentum: 'fast' });
 void screen.swipe({ from: point, to: point });

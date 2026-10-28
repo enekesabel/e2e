@@ -166,7 +166,7 @@ describe('SessionTestLines', () => {
     const tools = createGrammarTools(context);
     expect(new Set(Object.keys(tools))).toEqual(GRAMMAR_TOOL_NAMES);
     const wrapped = new SessionTestLines({ query: locateQuery, resolve: async () => [], read: async () => ({ ref: { id: 'x', revision: 'x' } }), redact: (text) => text }).wrap(tools);
-    expect(Object.keys(tools).filter((name) => wrapped[name] === tools[name]).toSorted()).toEqual(['hover_at', 'observe', 'press_at', 'screenshot', 'select_at', 'tap_at', 'type_at']);
+    expect(Object.keys(tools).filter((name) => wrapped[name] === tools[name]).toSorted()).toEqual(['drag_at', 'hover_at', 'observe', 'press_at', 'screenshot', 'select_at', 'tap_at', 'type_at']);
   });
 
   const save: Fake = { id: 'n2', role: 'button', name: 'Save', y: 40 };

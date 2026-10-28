@@ -12,7 +12,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { StepExecutor } from '../../src/agent/executor.ts';
-import { defineEngine, type NodeRef } from '../../src/engine/index.ts';
+import { defineEngine, type LocatorAction, type NodeRef } from '../../src/engine/index.ts';
 import { startFixtureApp, type FixtureApp } from '../helpers/fixture-app.ts';
 import { installFakeLoopModel, loopCalls, type LoopCall } from '../helpers/fake-loop-model.ts';
 import { resultByTitle, runProject, type FixtureProject } from '../helpers/run-project.ts';
@@ -36,6 +36,20 @@ test('taps the bare point inside a full-screen control whose center is covered',
   await app.open('/popover');
   await agent.act('dismiss the calendar popover');
   await expect(screen.getByRole('status')).toHaveText('dismissed');
+});
+
+test('drags a drawn pin the tree does not list', async ({ app, agent, screen }) => {
+  await app.open('/canvas');
+  await agent.act('drag the red pin to the middle of the map');
+  await expect(screen.getByRole('status')).toHaveText('moved red to 200,100');
+  await screen.tapAt({ x: 200, y: 100 });
+  await expect(screen.getByRole('status')).toHaveText('red');
+});
+
+test('drags between the bare points on listed controls and names them', async ({ app, agent, screen }) => {
+  await app.open('/canvas');
+  await agent.act('drag the reset button onto the note field');
+  await expect(screen.getByRole('status')).toHaveText('none');
 });
 
 test('opens a bare canvas with a screenshot already attached', async ({ app, agent, screen }) => {
@@ -129,6 +143,18 @@ function actModel(call: LoopCall) {
     if (calls === 1) return [{ toolName: 'tap_at', input: { x: 60, y: 60 } }];
     return conclude('passed');
   }
+  if (call.prompt.includes('drag the red pin')) {
+    // The red pin at CSS (300, 60) is image (180, 36); the map's middle, CSS (200, 100), is image (120, 60).
+    if (calls === 0) return [{ toolName: 'screenshot', input: {} }];
+    if (calls === 1) return [{ toolName: 'drag_at', input: { x: 180, y: 36, to_x: 120, to_y: 60 } }];
+    return conclude('passed');
+  }
+  if (call.prompt.includes('drag the reset button onto the note field')) {
+    // Reset's center, CSS (50, 275), is image (30, 165); the Note field's, CSS (100, 315), is image (60, 189).
+    if (calls === 0) return [{ toolName: 'screenshot', input: {} }];
+    if (calls === 1) return [{ toolName: 'drag_at', input: { x: 30, y: 165, to_x: 60, to_y: 189 } }];
+    return conclude('passed');
+  }
   if (call.prompt.includes('pick the blue pin on the bare map')) {
     // The opening prompt carried the screenshot: the blue pin at CSS (80, 140) is image (48, 84), no screenshot call.
     return calls === 0 ? [{ toolName: 'tap_at', input: { x: 48, y: 84 } }] : conclude('passed');
@@ -197,7 +223,7 @@ function actModel(call: LoopCall) {
   return conclude('passed');
 }
 
-const POINT_VERBS = ['screenshot', 'tap_at', 'type_at', 'press_at', 'select_at'];
+const POINT_VERBS = ['screenshot', 'tap_at', 'drag_at', 'type_at', 'press_at', 'select_at'];
 
 describe('agent.act pixel verbs', () => {
   let app: FixtureApp;
@@ -282,6 +308,27 @@ describe('agent.act pixel verbs', () => {
     expect(actions.map((event) => event.name)).toEqual(['tapAt']);
     const [, , third] = turnsOf('dismiss the calendar popover');
     expect(third!.lastToolResult).toMatch(/Tapped the point \(100, 100\) inside #\S+ button \\"Dismiss popover\\"/);
+  });
+
+  it('drags between two bare points through the engine when no listed controls hold them', () => {
+    expect(resultByTitle(outcome, 'drags a drawn pin the tree does not list').status).toBe('passed');
+    const step = stepOf('drags a drawn pin the tree does not list');
+    const actions = step.events.filter((event) => event.kind === 'engine');
+    expect(actions.map((event) => event.name)).toEqual(['dragAt']);
+    expect(actions[0]!.detail).toBe('drag from the point (300, 60) to the point (200, 100)');
+    const [, , third] = turnsOf('drag the red pin');
+    expect(third!.lastToolResult).toContain('Dragged from the point (300, 60) to the point (200, 100); no listed control is at either end.');
+    expect(third!.lastToolResult).toContain('"type":"file"');
+  });
+
+  it('drags between the bare points when they land on listed controls, naming the controls', () => {
+    const title = 'drags between the bare points on listed controls and names them';
+    expect(resultByTitle(outcome, title).status).toBe('passed');
+    const actions = stepOf(title).events.filter((event) => event.kind === 'engine');
+    expect(actions.map((event) => event.name)).toEqual(['dragAt']);
+    expect(actions[0]!.detail).toBe('drag from the point (50, 275) on button "Reset" to the point (100, 315) on textbox "Note"');
+    const [, , third] = turnsOf('drag the reset button onto the note field');
+    expect(third!.lastToolResult).toMatch(/Dragged from the point \(50, 275\) inside #\S+ button \\"Reset\\" to the point \(100, 315\) inside #\S+ textbox \\"Note\\"\./);
   });
 
   it('attaches a screenshot to the opening prompt of a screen with nothing to tap by id', () => {
@@ -551,5 +598,70 @@ test('taps outside the popover', async ({ agent }) => { await agent.act('dismiss
     expect(result.status, JSON.stringify(result.attempts[0]?.error)).toBe('passed');
     expect(performed).toEqual(['dismiss']);
     expect(summary).toMatch(/^Tapped #\S+ button "Dismiss popover", the control at \(100, 100\)\.$/);
+  });
+});
+
+describe('actions.dragAt on an engine that drags listed nodes only', () => {
+  const performed: string[] = [];
+  let summary: string | undefined;
+  let refused: string | undefined;
+  let outcome: RunOutcome;
+  let project: FixtureProject;
+
+  beforeAll(async () => {
+    const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+    const engine = defineEngine({
+      name: 'node-drags-only', version: '1', spiVersion: 1, platform: 'fixture',
+      actions: ['dragTo'],
+      perform: async (ref: NodeRef, action: LocatorAction) => { performed.push(action.kind === 'dragTo' ? `${ref.id} onto ${action.target.id}` : ref.id); },
+      observe: async () => ({
+        root: {
+          ref: { id: 'root', revision: '' },
+          rect: rect(0, 0, 1280, 720),
+          children: [
+            { ref: { id: 'card', revision: '' }, role: 'button', name: 'Card', rect: rect(100, 100, 200, 100) },
+            { ref: { id: 'done', revision: '' }, role: 'button', name: 'Done', rect: rect(600, 100, 200, 100) },
+          ],
+        },
+        viewport: { width: 1280, height: 720 },
+      }),
+    });
+    const executor: StepExecutor = {
+      name: 'card-dragger',
+      version: '1',
+      async runStep(context) {
+        await context.observe();
+        ({ summary } = await context.actions.dragAt({ x: 150, y: 150 }, { x: 700, y: 150 }));
+        try {
+          await context.actions.dragAt({ x: 120, y: 120 }, { x: 280, y: 180 });
+        } catch (error) {
+          refused = (error as { code?: string }).code;
+        }
+        return { status: 'passed', summary };
+      },
+    };
+    const run = await runProject(
+      {
+        'tests/board.e2e.ts': `import { test } from 'e2e';
+test('moves the card to done', async ({ agent }) => { await agent.act('move the card to done'); });
+`,
+      },
+      {
+        appUrl: 'https://fixture.test',
+        config: { tests: 'tests/**/*.e2e.ts', cache: 'off', targets: [{ name: 'fixture', engine }], agents: { default: { executor } } },
+      },
+    );
+    outcome = run.outcome;
+    project = run.project;
+  }, 120_000);
+
+  afterAll(() => project?.cleanup());
+
+  it('joins the two controls by id and says so, and refuses a drag inside one control', () => {
+    const result = resultByTitle(outcome, 'moves the card to done');
+    expect(result.status, JSON.stringify(result.attempts[0]?.error)).toBe('passed');
+    expect(performed).toEqual(['card onto done']);
+    expect(summary).toMatch(/^Dragged #\S+ button "Card", the control at \(150, 150\), onto #\S+ button "Done", the control at \(700, 150\)\.$/);
+    expect(refused).toBe('UNSUPPORTED_CAPABILITY');
   });
 });
