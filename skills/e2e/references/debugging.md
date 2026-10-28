@@ -57,11 +57,13 @@ default.
      screen at failure, the app source, or a live session.
    - For a screen the evidence and the source leave out, look live (topic
      `mcp`): open or reuse a session, go straight to that screen, then
-     `observe` and `locate`. On the web, `navigate` to the path of the
-     `❯ at` URL or the screen's route, and tap only to reach a state no URL
-     opens. A device session starts on the app's launch screen: take the
-     shortest path from there.
-   - Then rerun the file (topic `mcp` says when a session must close
+     `observe` and `locate`, or `run_code` for the fixed line and the ones
+     after it. On the web, `navigate` to the path of the `❯ at` URL or the
+     screen's route, and tap only to reach a state no URL opens. A device
+     session starts on the app's launch screen: take the shortest path from
+     there.
+   - Then rerun only that test by `file:line` (SKILL.md, "Rerunning a
+     test while you fix it"; topic `mcp` says when a session must close
      first).
 3. `.e2e/report.json` holds the same facts for scripts, not for reading:
    each step's `events` (`engine`, `poll`, `navigation`) and the attempt's
@@ -100,6 +102,7 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 | `CONFIG_NOT_FOUND`, `CONFIG_AMBIGUOUS` | Wrong `--config` path; both `.ts` and `.mts` present | Fix the path; keep one |
 | `NO_TESTS` | The glob, a positional, or a filter matched nothing; the message names each empty positional and each undeclared `--tag` with the nearest declared one | Check the config `tests`, the file suffix (`.e2e.ts` by default), the tag names |
 | `NO_LAST_RUN` | `--last-failed` found no `.e2e/report.json` | Run once without it |
+| `INVALID_CHANGED_SINCE` | `--changed-since` names no commit in the checkout, shares no history with HEAD (a shallow clone, or unrelated histories), or git is missing | Run from a git checkout with git installed; check the ref; fetch it and more history (`git fetch --unshallow`, or `fetch-depth: 0` on `actions/checkout`); for unrelated histories, name a ref on HEAD's history |
 | `COLLECTION_ERROR` | `async` describe body, `test.setup` inside `describe`, an option forbidden in a serial group, registration outside collection | Restructure per `writing-tests` |
 | `HOOK_FAILED` | `beforeAll` or `afterAll` threw; its scope's tests skip | Fix the hook; the report carries its error |
 | `UNSUPPORTED_ARTIFACT` | A test's or target's `video` on an engine that cannot record | Drop it there, or set it at the config root or CLI (such targets skip with a notice) |
@@ -137,7 +140,7 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 | `--headed` | Watch the failing step |
 | `--workers 1 --retries 0` | Take parallelism and retries out of the picture |
 | `--action-timeout 5000` | While writing a test: a wrong locator fails in 5 s instead of 30 s (`--assertion-timeout` for `expect`). Keep it longer than the slowest screen takes to load |
-| `--no-cache` | Rule out a stale `agent.act` replay |
+| `--no-cache` | Rule out a stale `agent.act` replay; one run, not every rerun. A failed run already deletes the replay that ran into the failure, so rerun with the cache on first. When the failure repeats after a replay the trace page shows as kept and the `--no-cache` run passes, tighten the check after that goal: the stale replay then fails it and is deleted |
 | `--debug` | Each agent step's duration, model calls, cost, transcript |
 | `--ai-trace`, then `npx unbox-ai runs .e2e/ai-trace.json` | What the model saw and called |
 | `--video`, `--video=retain-on-failure` | Watch the failed attempt; `step.startedAt` minus the segment's `startedAt` is the step's offset into it |

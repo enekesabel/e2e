@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { resolveVision } from '../config/agent.ts';
 import { ConfigurationError } from '../internal/errors.ts';
 import { withAbort, withTimeout } from '../internal/time.ts';
-import type { ActionHook, ActOptions, ActResult, AgentErrorCode, JsonValue, ModelInstance, Secret, VisionMode } from '../types.ts';
+import type { ActionHook, ActOptions, BeforeActionHook, ActResult, AgentErrorCode, JsonValue, ModelInstance, Secret, VisionMode } from '../types.ts';
 import { AgentError, CATEGORY_BY_CODE, toAgentError } from './error.ts';
 import { redactParams, validateActOptions, validateInstruction, validateParams, validateVerdict } from './act-validation.ts';
 import { ActionDispatcher } from './action-dispatcher.ts';
@@ -43,7 +43,7 @@ import { failedStepOutcome, StepTraceSession, type StepCacheHost, type StepOutco
 import type { ParamTemplate } from '../cache/template.ts';
 
 /** What a dispatch needs of the agent a step runs with; an interactive step supplies its own. */
-export type DispatchAgent = Pick<AgentSelection, 'name' | 'config' | 'executor' | 'agentContext' | 'keyedContext'>;
+export type DispatchAgent = Pick<AgentSelection, 'name' | 'config' | 'executor' | 'agentContext'>;
 
 /** Everything one dispatched step is, resolved before the step opens. */
 export interface DispatchSpec {
@@ -69,6 +69,8 @@ export interface DispatchSpec {
   readonly vision?: VisionMode;
   /** Act only: the test's hook for each completed action. */
   readonly onAction?: ActionHook | undefined;
+  /** Act only: the test's hook before each action. */
+  readonly onBeforeAction?: BeforeActionHook | undefined;
 }
 
 /** Runs one `agent.act()` call as a harness-dispatched executor step. */
@@ -94,6 +96,7 @@ export async function runActStep(
     maxModelCalls: options?.maxModelCalls,
     agent: options?.agent,
     onAction: options?.onAction,
+    onBeforeAction: options?.onBeforeAction,
   });
 }
 
@@ -157,9 +160,8 @@ export async function dispatchAgentStep(
   // Redacted per step, not once per agent: the ledger is live, so a value
   // resolved since the agent was selected is covered too.
   const context = agent.agentContext === undefined ? undefined : runtime.redact(agent.agentContext);
-  const keyedContext = agent.keyedContext === undefined ? undefined : runtime.redact(agent.keyedContext);
   return runtime.steps.run('agent', spec.api, spec.instruction, async () => {
-    const dispatch = new ActDispatch(runtime, spec, { ...agent, agentContext: context, keyedContext });
+    const dispatch = new ActDispatch(runtime, spec, { ...agent, agentContext: context });
     try {
       let verdict: StepVerdict;
       try {
@@ -238,6 +240,7 @@ class ActDispatch {
       secrets: spec.secrets,
       trace: () => this.stepCache,
       onAction: spec.onAction,
+      onBeforeAction: spec.onBeforeAction,
     });
     // The dispatch always runs inside a recorded step (`dispatchAgentStep`
     // opens one); the index names the step to the executor and to the trace cache.
@@ -260,9 +263,8 @@ class ActDispatch {
               name: agent.executor.name,
               ...(agent.executor.version === undefined ? {} : { version: agent.executor.version }),
             },
-            // Redacted already (`dispatchAgentStep`): the key digests the context the
-            // executor reads, less the test's title, which the key's test id names.
-            agent: { name: agent.name, context: agent.keyedContext },
+            // Redacted already (`dispatchAgentStep`): the key digests the context the executor reads.
+            agent: { name: agent.name, context: agent.agentContext },
             redact: runtime.redact,
             redactCut: runtime.redactCut,
             maxActions: this.accounting.maxActions,
@@ -294,7 +296,8 @@ class ActDispatch {
         ...(this.spec.vision === undefined ? {} : { vision: this.spec.vision }),
       },
       target: this.runtime.target,
-      attempt: this.runtime.attempt,
+      // Redacted per step like the context: a secret resolved since collection is covered too.
+      attempt: { ...this.runtime.attempt, titlePath: this.runtime.attempt.titlePath.map((part) => this.runtime.redact(part)) },
       ...(replayedPrefix === undefined ? {} : { replayedPrefix }),
       signal: this.accounting.signal,
       // Resolved on first read, so executors that bring their own model (or

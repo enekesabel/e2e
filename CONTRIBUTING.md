@@ -23,6 +23,10 @@ The changes most likely to be accepted:
 - Docs fixes
 - Engine and platform fixes (a browser, device, or OS that misbehaves)
 - Performance improvements
+- Community examples: a link to your own example repository on
+  [e2e.tester.army/examples](https://e2e.tester.army/examples), added to
+  [`examples/examples.json`](./examples/examples.json) as
+  [`examples/CONTRIBUTING.md`](./examples/CONTRIBUTING.md) describes
 
 New features, and changes to the public contract below, need agreement before
 any code. Open a feature request with the problem and the API you have in
@@ -79,11 +83,11 @@ This project is a pnpm monorepo. `packages/` holds what publishes to npm,
 - `packages/e2e`: the published `e2e` package (SDK, runner, CLI, engine contract)
 - `packages/web`: the published `@e2e-dev/web` browser engine
 - `packages/mobile`: the published `@e2e-dev/mobile` mobile engine
-- `packages/decision`: the decision-model executor on the public `StepExecutor` contract
+- `packages/decision`: the decision-model executor and test filter on the public `StepExecutor` and `TestFilter` contracts
 - `apps/testbed`: private dogfood suite that consumes the built packages
 - `apps/web-benchmark`: private Next.js app of hard-surface scenarios plus the e2e suites written against them
 - `apps/mobile-benchmark`: private Expo app of hard mobile surfaces plus the e2e suites written against them
-- `docs/`: the docs site, built with [Mintlify](https://mintlify.com)
+- `docs/`: the documentation pages
 - `skills/e2e/`: the agent skill shipped with the package and installed by `e2e init`
 - `skills/create-verification-skill/`: the generator of a project-local `verify-<app>` skill, installed with `npx skills add tester-army/e2e --skill create-verification-skill`
 - `skills/migrate-to-e2e/`: ports an existing Playwright, Cypress, Selenium, Detox, or Maestro suite one slice at a time, installed with `npx skills add tester-army/e2e --skill migrate-to-e2e`
@@ -124,20 +128,8 @@ page under `docs/` in the same review, and `skills/e2e/` when the
 skill describes that surface.
 
 ```sh
-pnpm docs:dev     # render the Open Graph cards, then preview locally
-pnpm docs:og      # render the Open Graph cards for new or changed pages
-pnpm docs:check   # validate the site, its links, the quickstart examples, and the cards
+pnpm docs:check   # check the links, anchors, examples, package manager tabs, and logos
 ```
-
-Every page in the navigation except the home page has its own social
-preview card under `docs/images/og/`, drawn from its title, description, and
-navigation section by `docs/og/generate.tsx` with `@vercel/og`. Mintlify runs
-no build step of ours, so the cards and the `og:image` and `twitter:image`
-lines the script writes into each page's frontmatter are committed. A new
-page, a renamed one, one moved to another navigation section, or an edited
-title or description needs `pnpm docs:og`;
-`pnpm docs:check` fails until it has run. A page with no card falls back to
-the brand card, `docs/images/og.png`, set site-wide in `docs/docs.json`.
 
 A change that claims to be faster, or that touches the runner, the agent
 loop, or an engine, gets measured against `main` on the benchmark suites:
@@ -204,8 +196,7 @@ pending changesets. That PR gets no CI of its own (it is opened with
 peer ranges, builds, publishes the new versions, and creates the matching
 GitHub release. A release that published `e2e` then lists it in the MCP
 Registry (`mcp-registry.yml`); to retry a failed listing, run that workflow
-by hand with the version. It also calls the `VERCEL_DEPLOY_HOOK` secret,
-which rebuilds the docs at e2e.tester.army. `@e2edev/e2e` is the
+by hand with the version. `@e2edev/e2e` is the
 runner's retired name, and the `@e2edev` scope is the engines' and reporters'
 retired scope; both are deprecated on npm.
 

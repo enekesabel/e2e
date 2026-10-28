@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { BUILT_IN_AGENT } from '../agent/agent-brand.ts';
 import { createAgentFixture } from '../agent/index.ts';
-import { prepareObservation } from '../agent/observation.ts';
+import { prepareObservation, type NodeRedaction } from '../agent/observation.ts';
 import type { AgentContext, AgentSelection } from '../agent/invocation.ts';
 import type { ExecutorAttempt, StepExecutor } from '../agent/executor.ts';
 import type { AgentCacheContext } from '../cache/context.ts';
@@ -15,7 +15,7 @@ import type { DebugTrace } from '../internal/debug.ts';
 import { ConfigurationError, errorMessage, InfrastructureError, TestError } from '../internal/errors.ts';
 import { Deadline } from '../internal/time.ts';
 import { didYouMean } from '../internal/suggest.ts';
-import { createScreenshotContext, type WrittenScreenshots } from './screenshots.ts';
+import { createScreenshotContext, type ScreenshotContext, type WrittenScreenshots } from './screenshots.ts';
 import { resolveSecretValue, sessionSecrecy } from './secrecy.ts';
 import { resolveNavigationUrl } from '../internal/urls.ts';
 import { FixtureRecorder } from './fixture-recording.ts';
@@ -93,18 +93,59 @@ export interface AttemptFixtures {
   readonly agentRuntime: AgentContext;
 }
 
-export function createFixtures(environment: AttemptEnvironment): AttemptFixtures {
-  const engine = new LocatorEngine({
-    session: environment.session,
-    budget: environment.budget,
-    runId: environment.runId,
-    attemptId: environment.attemptId,
-    actionTimeout: environment.config.actionTimeout,
-    assertionTimeout: environment.config.assertionTimeout,
-    recordEvent: (event) => environment.steps.recordEvent(event),
-    redact: (text) => environment.steps.redactText(text),
-  });
+/** What a screen over one engine session is wired to. */
+interface ScreenWiring {
+  /** The engine session the screen drives. */
+  readonly session: TargetSession;
+  readonly budget: AttemptBudget;
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly config: ResolvedConfig;
+  readonly steps: StepRecorder;
+  readonly secrets: SecretResolver;
+  /** The session's secret ledger, which `screen.tree()` passes its text through. */
+  readonly redaction: NodeRedaction;
+  /** The app URL's origin, so the tree shows a link on it by its path. */
+  readonly appOrigin: string | undefined;
+  /** Where `toHaveScreenshot` keeps screenshots; only a test has them. */
+  readonly screenshots?: ScreenshotContext | undefined;
+}
 
+/**
+ * The locator engine and screen context over one engine session, wired to the
+ * attempt's budget, step recorder, timeouts, and secret resolver. The test
+ * fixtures use it, and so does `e2e mcp`'s `run_code` with a session whose
+ * reads pass the secret ledger.
+ */
+export function createScreenContext(wiring: ScreenWiring): ScreenContext {
+  const { config, steps } = wiring;
+  const engine = new LocatorEngine({
+    session: wiring.session,
+    budget: wiring.budget,
+    runId: wiring.runId,
+    attemptId: wiring.attemptId,
+    actionTimeout: config.actionTimeout,
+    assertionTimeout: config.assertionTimeout,
+    recordEvent: (event) => steps.recordEvent(event),
+    redact: (text) => steps.redactText(text),
+  });
+  return {
+    engine,
+    steps,
+    secrets: wiring.secrets,
+    projectRoot: config.projectRoot,
+    renderTree: (observation) =>
+      prepareObservation(observation, {
+        redact: wiring.redaction.redact,
+        redactCut: wiring.redaction.redactCut,
+        maxBytes: config.limits.maxObservationBytes,
+        appOrigin: wiring.appOrigin,
+      }).text,
+    ...(wiring.screenshots === undefined ? {} : { screenshots: wiring.screenshots }),
+  };
+}
+
+export function createFixtures(environment: AttemptEnvironment): AttemptFixtures {
   const { ledger, exposure } = sessionSecrecy(environment.session, environment.config.allSecrets);
   const secrets: SecretResolver = {
     async resolve(secret) {
@@ -116,18 +157,16 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
     },
   };
 
-  const screenContext: ScreenContext = {
-    engine,
+  const screenContext = createScreenContext({
+    session: environment.session,
+    budget: environment.budget,
+    runId: environment.runId,
+    attemptId: environment.attemptId,
+    config: environment.config,
     steps: environment.steps,
     secrets,
-    projectRoot: environment.config.projectRoot,
-    renderTree: (observation) =>
-      prepareObservation(observation, {
-        redact: ledger.redact,
-        redactCut: ledger.redactCut,
-        maxBytes: environment.config.limits.maxObservationBytes,
-        appOrigin: environment.target.app.base?.origin,
-      }).text,
+    redaction: ledger,
+    appOrigin: environment.target.app.base?.origin,
     ...(environment.test === undefined
       ? {}
       : {
@@ -142,7 +181,8 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
             artifacts: environment.artifacts,
           }),
         }),
-  };
+  });
+  const { engine } = screenContext;
   const screen = createScreen(screenContext);
   const app = createApp(environment, engine);
 
@@ -156,8 +196,6 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
    */
   const { config } = environment;
   const attemptAgentName = environment.agent ?? config.agentNames[0]!;
-  // Collection already redacted the titles, so a secret spelled in one arrives as its marker.
-  const testTitleContext = environment.test === undefined ? undefined : `Test: ${environment.test.titlePath.join(' > ')}`;
   const selections = new Map<string, AgentSelection>();
   const select = (requested: string | undefined): AgentSelection => {
     if (requested !== undefined && (typeof requested !== 'string' || requested === '')) {
@@ -187,8 +225,7 @@ export function createFixtures(environment: AttemptEnvironment): AttemptFixtures
       // MODEL_UNAVAILABLE it would never hit; a judgment still fails with it
       // on its first call.
       judge: lazily(() => environment.models.build(resolved.judge, name)),
-      agentContext: joinAgentContext(testTitleContext, resolved.context, environment.agentContext),
-      keyedContext: joinAgentContext(resolved.context, environment.agentContext),
+      agentContext: joinAgentContext(resolved.context, environment.agentContext),
     };
     selections.set(name, selection);
     return selection;
@@ -388,9 +425,12 @@ function lazyBuiltInAgent(config: ResolvedAgentConfig): StepExecutor {
   };
 }
 
-/** Joins the non-blank context parts in order, one per line: the test's title, config context, then test/group context. */
-function joinAgentContext(...contexts: readonly (string | undefined)[]): string | undefined {
-  const parts = contexts.filter(
+/** Trusted config context first, then test/group context. */
+function joinAgentContext(
+  configContext: string | undefined,
+  testContext: string | undefined,
+): string | undefined {
+  const parts = [configContext, testContext].filter(
     (part): part is string => part !== undefined && part.trim() !== '',
   );
   return parts.length === 0 ? undefined : parts.join('\n');
