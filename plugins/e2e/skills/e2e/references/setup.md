@@ -376,14 +376,23 @@ export default {
   exactly, TestMu AI installs `app` (omit `app.appPath`), and it reads
   `LT_USERNAME` and `LT_ACCESS_KEY`. An attempt's video links TestMu AI's
   recording of the whole session.
-- Only a control that appeared or moved with the previous action waits out
-  `transition` (default 500 ms); agent actions settle `settle` ms (default
+- A control that appeared or moved with the previous action waits out
+  `transition` (default 500 ms). Opening or closing the keyboard also uses
+  the remaining budget. Agent actions settle `settle` ms (default
   150) before the next observation, `settle: false` skips it.
+- Mobile `fill` and `clear` re-read the field before typing, replay included.
+  Missing fields, changed security state, or incomplete captures return
+  `NODE_STALE` before mutation, then retry after a fresh observation.
+  Non-input targets return `UNSUPPORTED_CAPABILITY`.
 - `screen`, `expect`, `app`, `agent` work unchanged; `test` from
   `@e2e-dev/mobile` types the `device` fixture (`installApp`, `openLink`,
   `setPermission`, `setNetwork`, `setAppearance`, `clearKeychain`, `fold`
   for a foldable's hinge (iPhone Duo, Android foldable emulators), `locator`, more). Portable suites declare
   `requires: ['device']`.
+- `device.unstable_raw` gives the session name, device id and name, and an
+  agent-device `client` bound to the test's session, for what `device`
+  lacks. Client calls are not steps: no report, trace, replay, or secret
+  redaction. Unstable: may change or go away in any release.
 - `setNetwork('offline')` and `setAirplaneMode(true)` are Android only: on
   iOS both are `UNSUPPORTED_CAPABILITY`, since a simulator shares the Mac's
   network, and `setNetwork('online')` / `setAirplaneMode(false)` do nothing.
