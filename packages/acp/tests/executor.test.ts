@@ -64,7 +64,6 @@ function context(options: { kind?: 'act' | 'assert'; attempt?: ReturnType<typeof
         ? { pixels: { data: new Uint8Array([137, 80, 78, 71]), mediaType: 'image/png' as const, width: 800, height: 600, scale: 1, maskedRegionCount: 0 } }
         : {}),
     })),
-    pixelsTainted: false,
     attachTranscript: (text: string) => void transcripts.push(text),
     attachTurns: () => undefined,
     attachScreenshot: async () => 'screenshot',
@@ -257,17 +256,6 @@ describe('acp', () => {
     cleanups.push(step.end);
     await expect(executor.runStep(step.ctx)).resolves.toMatchObject({ status: 'failed', errorCode: 'POLICY_DENIED' });
     expect(step.type).not.toHaveBeenCalled();
-  });
-
-  it('refuses a screenshot once a secret was filled, before the engine is asked for pixels', async () => {
-    const { executor, log } = scripted([[{ call: 'screenshot' }, pass]]);
-    const step = context();
-    cleanups.push(step.end);
-    // The session lists screenshot from an untainted first step; this step is tainted.
-    Object.assign(step.ctx, { pixelsTainted: true });
-    await executor.runStep(step.ctx);
-    expect(JSON.stringify(log().find((entry) => entry['call'] === 'screenshot'))).toContain('PIXEL_TAINTED');
-    expect(step.ctx.observe).not.toHaveBeenCalledWith(expect.objectContaining({ pixels: true }));
   });
 
   it('starts a fresh agent for the next step when a step ended while the agent was starting', async () => {

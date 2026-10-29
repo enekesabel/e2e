@@ -153,13 +153,11 @@ const TYPE_SECRET =
 
 /**
  * Every action tool any step of the attempt can get: the first step's, with
- * the two that come and go per step added. `type_secret` is built only for a
- * step that declares secrets, and `screenshot` goes once a secret was filled;
- * a call of either where the active step has none says why.
+ * `type_secret` added. It is built only for a step that declares secrets; a
+ * call of it where the active step has none says why.
  */
 function listing(first: StepExecutorContext): AgentTools {
   const widest = Object.create(first, {
-    pixelsTainted: { value: false },
     step: { value: { ...first.step, secrets: [{ name: 'secret', purpose: 'password' }] } },
   }) as StepExecutorContext;
   return createGrammarTools(widest) as AgentTools;
@@ -167,7 +165,6 @@ function listing(first: StepExecutorContext): AgentTools {
 
 function unavailable(name: string): string {
   if (name === 'type_secret') return 'this step declares no secrets';
-  if (name === 'screenshot') return 'a secret was filled in this attempt, so no screenshots leave the runner until it ends (PIXEL_TAINTED)';
   return `${name} is not available in this step`;
 }
 

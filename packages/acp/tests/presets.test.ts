@@ -51,7 +51,6 @@ async function runStep(executor: StepExecutor, log: string): Promise<Record<stri
     agentContext: undefined,
     actions: {},
     observe: async () => ({ revision: '1', text: '#n1 button "Add"', truncated: false, viewport: { width: 800, height: 600 }, path: '/' }),
-    pixelsTainted: false,
     attachTranscript: () => undefined,
     attachTurns: () => undefined,
     attachScreenshot: async () => 'screenshot',
