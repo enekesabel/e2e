@@ -11,9 +11,10 @@ already use, such as Claude Code, Codex, or Cursor. It talks to the agent
 over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). The
 agent signs in with its own login or API key, so e2e needs no model provider.
 
-The agent gets the built-in agent's action tools and `complete_step`. The
-runner records every action, so steps replay from the [cache](/cache)
-without the agent. Your tests don't change.
+The agent gets `complete_step` and the built-in agent's action tools for
+the verbs the target's engine supports. The runner records every action, so
+steps replay from the [cache](/cache) without the agent. Your tests don't
+change.
 
 ## Set up your agent
 
