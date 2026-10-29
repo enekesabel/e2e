@@ -49,10 +49,10 @@ import { pointerInteraction, DEFAULT_LONG_PRESS_MS } from './actions.ts';
 import { resolveExpression } from './locate.ts';
 import {
   isWithin,
+  mayTakeText,
   normalizeKind,
   projectSnapshot,
   ROOT_ID,
-  TEXT_INPUT_ROLES,
   screenRoot,
   screenTitle,
   type ProjectedNode,
@@ -131,9 +131,10 @@ export interface OpenAppOptions {
 /**
  * The snapshot fields this engine reads off agent-device's response. `keyboard`
  * is the band the capture's producer measured: `visible` with its frame,
- * `absent`, or that it could not look.
+ * `absent`, or that it could not look. `refsGeneration` is the capture its
+ * refs were issued from.
  */
-type RawSnapshot = Partial<Pick<CaptureSnapshotResult, 'nodes' | 'viewport' | 'truncated' | 'appName' | 'appBundleId' | 'snapshotQuality' | 'keyboard'>>;
+type RawSnapshot = Partial<Pick<CaptureSnapshotResult, 'nodes' | 'viewport' | 'truncated' | 'appName' | 'appBundleId' | 'snapshotQuality' | 'keyboard' | 'refsGeneration'>>;
 
 /** Platform element types that are the soft keyboard or one of its keys, as agent-device names them. */
 const KEYBOARD_TYPES: ReadonlySet<string> = new Set(['keyboard', 'key']);
@@ -200,7 +201,11 @@ interface NodeBinding {
   readonly ref: string;
   readonly node: SemanticNode;
   readonly controlRef: string;
+  /** The capture `ref` and `controlRef` came from, pinned on every action so agent-device refuses them once a newer capture supersedes it. */
+  readonly refsGeneration: number | undefined;
   readonly keyboardVisible: boolean;
+  /** Whether `fill` and `clear` may type into the node, judged with the children `node` leaves out. */
+  readonly takesText: boolean;
 }
 
 
@@ -1015,6 +1020,7 @@ export class AgentDeviceSurface {
           return `n${this.idCounter}`;
         },
         viewport: raw.viewport,
+        refsGeneration: raw.refsGeneration,
       }),
       keyboardVisible: keyboardShowing(raw),
     };
@@ -1131,7 +1137,7 @@ export class AgentDeviceSurface {
   private actionTarget(entry: NodeBinding, control = false): { ref: string } {
     const ref = control ? entry.controlRef : entry.ref;
     if (ref === '') throw notActionable(`node ${entry.id} has no agent-device ref to act on`);
-    return { ref: `@${ref}` };
+    return { ref: entry.refsGeneration === undefined ? `@${ref}` : `@${ref}~s${entry.refsGeneration}` };
   }
 
   /**
@@ -1161,7 +1167,32 @@ export class AgentDeviceSurface {
   private bind(entry: ProjectedNode, snapshot: ProjectedScreen): NodeBinding {
     const { children: _children, ...node } = entry.node;
     const control = this.controlOf(entry, snapshot.index);
-    return { id: entry.id, ref: entry.ref, node, controlRef: control.ref, keyboardVisible: snapshot.keyboardVisible };
+    return {
+      id: entry.id,
+      ref: entry.ref,
+      node,
+      controlRef: control.ref,
+      keyboardVisible: snapshot.keyboardVisible,
+      takesText: mayTakeText(entry.node),
+      refsGeneration: snapshot.refsGeneration,
+    };
+  }
+
+  /** The same control in the newest capture: the binding itself when it came from that capture, else found there again where it was. */
+  private current(entry: NodeBinding): NodeBinding {
+    const latest = this.latestScreen;
+    if (latest === undefined || entry.refsGeneration === latest.refsGeneration) return entry;
+    const found = this.samePlace(entry, latest.index);
+    if (found === undefined) {
+      throw new EngineError('NODE_STALE', `node ${entry.id} changed since it was located; re-resolve`, { retryable: true });
+    }
+    return this.bind(found, latest);
+  }
+
+  /** The node a binding stands for in a snapshot, when it is still where it was. */
+  private samePlace(entry: NodeBinding, index: readonly ProjectedNode[]): ProjectedNode | undefined {
+    const found = this.refind(entry, index);
+    return found !== undefined && sameRect(found.node.rect, entry.node.rect) ? found : undefined;
   }
 
   /**
@@ -1202,10 +1233,7 @@ export class AgentDeviceSurface {
     const remaining = this.transitionMs - since;
     if (remaining <= 0) return false;
     const before = this.screenBeforeAction;
-    if (before !== undefined && before.keyboardVisible === entry.keyboardVisible) {
-      const prior = this.refind(entry, before.index);
-      if (prior !== undefined && sameRect(prior.node.rect, entry.node.rect)) return false;
-    }
+    if (before !== undefined && before.keyboardVisible === entry.keyboardVisible && this.samePlace(entry, before.index) !== undefined) return false;
     await sleep(remaining, operation.signal);
     // The sleep resolves on abort; the action behind it must not go out once
     // the caller has already been told the operation was cancelled.
@@ -1221,7 +1249,11 @@ export class AgentDeviceSurface {
     return entry;
   }
 
-  /** The same control in a fresh snapshot; input mutations refuse a missing target or changed security facts. */
+  /**
+   * The same control in a fresh snapshot. A snapshot that no longer lists it
+   * is a retryable NODE_STALE, so the locator resolves again; input mutations
+   * also refuse a truncated snapshot or changed security facts.
+   */
   private async relocated(entry: NodeBinding, operation: OperationContext, input = false): Promise<NodeBinding> {
     const raw = await this.snapshotOrEmpty(operation, false);
     const projected = this.project(raw);
@@ -1233,7 +1265,10 @@ export class AgentDeviceSurface {
       entry.node.states?.hidden !== found.node.states?.hidden)) {
       throw new EngineError('NODE_STALE', `input node ${entry.id} changed before mutation; observe and authorize it again`, { retryable: true });
     }
-    return found === undefined ? entry : this.bind(found, projected);
+    if (found === undefined) {
+      throw new EngineError('NODE_STALE', `node ${entry.id} changed during transition; re-resolve`, { retryable: true });
+    }
+    return this.bind(found, projected);
   }
 
   /**
@@ -1270,9 +1305,9 @@ export class AgentDeviceSurface {
     }
     const entry = this.resolveRef(ref);
     const filling = action.kind === 'fill' || action.kind === 'clear';
-    if (filling && (entry.node.role === undefined || !TEXT_INPUT_ROLES.has(entry.node.role))) {
-      throw unsupported(`agent-device can only ${action.kind} editable fields; node ${entry.id} is ${entry.node.role ?? 'unknown'}`);
-    }
+    const refuseFill = (binding: NodeBinding): EngineError =>
+      unsupported(`agent-device can only ${action.kind} editable fields; node ${binding.id} is ${binding.node.role ?? 'unknown'}`);
+    if (filling && !entry.takesText) throw refuseFill(entry);
     const label = `perform ${action.kind}`;
     const client = this.requireClient();
     // A toggle already in the wanted state sends nothing, so it neither waits
@@ -1286,6 +1321,7 @@ export class AgentDeviceSurface {
       if (filling) {
         if (deterministic) await this.waitForTransition(entry, operation);
         target = await this.relocated(entry, operation, true);
+        if (!target.takesText) throw refuseFill(target);
       } else if (deterministic) {
         target = await this.settled(entry, operation);
       }
@@ -1334,10 +1370,13 @@ export class AgentDeviceSurface {
           return input.send(() => client.interactions.swipe(swipeWithin(rect, action.direction, action.momentum)));
         }
         case 'dragTo': {
-          const destination = this.resolveRef(action.target);
+          // A test locates the drop target in a capture of its own, after the
+          // source's; agent-device takes both refs from the newest one only.
+          const source = this.current(target);
+          const destination = this.current(this.resolveRef(action.target));
           return input.send(() =>
             client.interactions.drag({
-              source: this.actionTarget(target).ref,
+              source: this.actionTarget(source).ref,
               destination: this.actionTarget(destination).ref,
             }),
           );
@@ -1374,17 +1413,17 @@ export class AgentDeviceSurface {
     if (parsed.modifiers.length > 0) {
       throw unsupported(`agent-device cannot hold ${parsed.modifiers.join('+')} on a device surface; press the key alone`);
     }
-    if (parsed.key.kind === 'named' && parsed.key.name === 'Enter') {
-      return input.send(() => client.command.keyboard({ action: 'enter' }));
+    const enter = parsed.key.kind === 'named' && parsed.key.name === 'Enter';
+    if (!enter && parsed.key.kind === 'named' && parsed.key.name !== 'Space') {
+      throw unsupported(`agent-device cannot press ${parsed.key.name} on a device surface; only Enter, Space, and single characters reach the soft keyboard`);
     }
-    if (parsed.key.kind === 'char' || parsed.key.name === 'Space') {
-      const text = parsed.key.kind === 'char' ? parsed.key.char : ' ';
-      if (entry.node.role === 'textbox' && entry.node.states?.focused !== true) {
-        await input.send(() => client.interactions.press({ ...this.actionTarget(entry), ...settle }));
-      }
-      return input.send(() => client.interactions.type({ text }));
+    // A key reaches the field through the soft keyboard, which is up only
+    // while the field holds focus.
+    if (entry.node.role === 'textbox' && entry.node.states?.focused !== true) {
+      await input.send(() => client.interactions.press({ ...this.actionTarget(entry), ...settle }));
     }
-    throw unsupported(`agent-device cannot press ${parsed.key.name} on a device surface; only Enter, Space, and single characters reach the soft keyboard`);
+    if (enter) return input.send(() => client.command.keyboard({ action: 'enter' }));
+    return input.send(() => client.interactions.type({ text: parsed.key.kind === 'char' ? parsed.key.char : ' ' }));
   }
 
   /**

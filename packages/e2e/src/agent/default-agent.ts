@@ -37,7 +37,7 @@ Rules:
 - You may issue several actions in one turn when each targets a node already on screen and no earlier action in the turn changes what a later one targets: fill several fields, then press the submit button as the last action. Actions run in order; each result reports its own changes. Anything that changes the page (a tap on a link or button, a navigation, a submit) should be the last action of its turn.
 - If the target is not on screen, bring it on screen with the tools you have (scroll_to for a node the screen lists, scroll, navigate) or conclude. Scrolling may repeat (times) or be issued several times in one turn to move far; each result reports what came into the tree.
 - tap is the default gesture for a listed control. The other verbs are offered only when this app's engine can perform them, and each one's description says what it is for; none of them makes a tap stronger.
-- Pixel tools, when offered: screenshot attaches the viewport's pixels when the tree lacks what you need (a shape on a canvas, a pin on a map, a region of an image, a control inside a system sheet) or contradicts what you expect; once you have one, every action result carries a fresh screenshot so you can see what the action did. tap_at, hover_at, type_at, press_at, and select_at act at a point in the latest screenshot's pixel coordinates; a listed control under the point is acted on by its id. Prefer ids: tap, hover, type, press, and select by id whenever the screen lists the target, use the point tools only for a target the screen does not list, and take a screenshot before guessing a point rather than aiming from memory or from what you expect to be drawn.
+- Pixel tools, when offered: screenshot attaches the viewport's pixels when the tree lacks what you need (a shape on a canvas, a pin on a map, a region of an image, a control inside a system sheet) or contradicts what you expect; once you have one, every action result carries a fresh screenshot so you can see what the action did. tap_at, hover_at, drag_at, type_at, press_at, and select_at act at a point in the latest screenshot's pixel coordinates. tap_at, hover_at, and drag_at act on the bare points where the engine can, and on the listed controls under them by id where it cannot; type_at, press_at, and select_at act on a listed control under the point by its id. Prefer ids: tap, hover, drag, type, press, and select by id whenever the screen lists the target, use the point tools only for a target the screen does not list, and take a screenshot before guessing a point rather than aiming from memory or from what you expect to be drawn.
 - When type and press accept no target: a field the screen does not list still takes text. tap_at it to give it focus, then type without a target (and press Enter without a target to submit). A field the screen lists is typed by id, and a listed node that is not an input (a canvas, a widget with its own key handling) is focused and typed into through the keyboard by the same call: never spell a value out with one press per character. dismiss_keyboard, when offered, hides an on-screen keyboard covering the target.
 - On a touch screen, a tap made while the keyboard is up may only close the keyboard; the result says so when the keyboard went away. Then act on the control again rather than concluding.
 - Conclude "passed" only when the latest result shows the outcome the step asked for. A result that reports no change, or only the keyboard closing, means the decisive action did not land: act again or conclude "failed". A result that says only that no listed node changed has not ruled out a drawn change: take a screenshot, when offered, before deciding. Never describe an unchanged screen as the outcome.`;
@@ -48,7 +48,7 @@ const presenters = new WeakMap<StepExecutorContext, ScreenPresenter>();
 function presenterFor(context: StepExecutorContext): ScreenPresenter {
   let presenter = presenters.get(context);
   if (presenter === undefined) {
-    presenter = new ScreenPresenter({ pixelsUnavailable: () => context.pixelsTainted });
+    presenter = new ScreenPresenter();
     presenters.set(context, presenter);
   }
   return presenter;
@@ -78,14 +78,13 @@ export function createBuiltInAgent(options: BuiltInAgentOptions = {}): StepExecu
       ...grammarTools(context, { guard: helpers.guard, screen: presenterFor(context) }),
     }),
     buildPrompt: async (context) => {
-      // The opening look is tree-only, unless pixels are allowed and no
-      // listed interactive node exists at all: then the opening prompt
-      // carries a screenshot, because the tree describes a canvas, a game,
+      // The opening look is tree-only, unless no listed interactive node
+      // exists at all: then the opening prompt carries a screenshot, because the tree describes a canvas, a game,
       // or a semantics-free native screen too poorly to act on, and the model
       // would only spend a turn asking for one. One listed control is enough
       // to leave the decision to the model; a small page is not a blind one.
       let observation = await context.observe();
-      if (!context.pixelsTainted && observation.pixels === undefined && interactiveNodeCount(observation) === 0) {
+      if (observation.pixels === undefined && interactiveNodeCount(observation) === 0) {
         observation = await context.observe({ pixels: true });
       }
       const title = testTitleLine(context.attempt.titlePath);
