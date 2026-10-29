@@ -15,7 +15,7 @@ export interface AcpAgentOptions {
 }
 
 /** Options for an executor that runs agent steps on any coding agent over the Agent Client Protocol. */
-export interface AcpExecutorOptions extends AcpAgentOptions {
+export interface AcpOptions extends AcpAgentOptions {
   /**
    * The command that starts the agent in ACP mode on stdio, e.g. Cursor's
    * `agent` with `['acp']`. The agent signs in the way it does on its own

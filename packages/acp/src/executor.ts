@@ -7,7 +7,7 @@ import type { Usage } from '@agentclientprotocol/sdk';
 import { startSession, type AcpSession, type AgentLaunch, type TurnReport } from './session.ts';
 import { activeStep, missingTools, openingScreen, stepTools, verdictOf, type ActiveStep, type StepSlot } from './tools.ts';
 import type { ServedTool } from './mcp.ts';
-import type { AcpAgentOptions, AcpExecutorOptions } from './types.ts';
+import type { AcpAgentOptions, AcpOptions } from './types.ts';
 
 /** What the session is, before the built-in agent's rules for the same tools. */
 const SESSION_RULES = `This conversation drives a real application for an end-to-end test, one step per message: an action to perform, or an assertion to judge, with the current screen.
@@ -30,16 +30,16 @@ interface Held {
 }
 
 /**
- * Builds a step executor that runs `agent.act` and `agent.assert` on any
- * ACP agent: one agent session per test attempt, started by its first agent
- * step and closed when the attempt ends. `acpExecutor.claudeCode()` and
- * `.codex()` start those agents with the step tools as their only tools.
+ * Runs `agent.act` and `agent.assert` on any agent that speaks ACP on stdio:
+ * one agent session per test attempt, started by its first agent step and
+ * closed when the attempt ends. `claudeCode()` and `codex()` start those
+ * agents with the step tools as their only tools.
  */
-export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
+export function acp(options: AcpOptions): StepExecutor {
   if (typeof options !== 'object' || options === null || typeof options.command !== 'string' || options.command === '') {
     throw new ConfigurationError(
       'INVALID_CONFIG',
-      "acpExecutor() takes { command, args }, e.g. acpExecutor({ command: 'agent', args: ['acp'] }), or use acpExecutor.claudeCode() or .codex()",
+      "acp() takes { command, args }, e.g. acp({ command: 'agent', args: ['acp'] }), or use claudeCode() or codex()",
     );
   }
   const launch: AgentLaunch = {
@@ -54,11 +54,14 @@ export function acpExecutor(options: AcpExecutorOptions): StepExecutor {
 }
 
 /** Claude Code through Zed's adapter (`@agentclientprotocol/claude-agent-acp`), signed in with your `claude` login. */
-acpExecutor.claudeCode = (options: AcpAgentOptions = {}): StepExecutor =>
-  executor(options.name ?? 'claude-code', options, claudeCodeLaunch(options));
+export function claudeCode(options: AcpAgentOptions = {}): StepExecutor {
+  return executor(options.name ?? 'claude-code', options, claudeCodeLaunch(options));
+}
 
 /** Codex through its adapter (`@agentclientprotocol/codex-acp`), signed in with your `codex` login. */
-acpExecutor.codex = (options: AcpAgentOptions = {}): StepExecutor => executor(options.name ?? 'codex', options, codexLaunch(options));
+export function codex(options: AcpAgentOptions = {}): StepExecutor {
+  return executor(options.name ?? 'codex', options, codexLaunch(options));
+}
 
 function executor(name: string, options: AcpAgentOptions, launch: () => Promise<AgentLaunch>): StepExecutor {
   // Where an attempt's session lives in `attempt.memory`: one key per executor, so two ACP agents never share a session.

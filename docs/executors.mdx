@@ -95,6 +95,10 @@ createToolLoopExecutor({
 });
 ```
 
+Outside the loop, a grammar tool returns a `ScreenOutput`: text, or text
+with the screenshot. When a tool throws an error that
+`isRuntimeHardStop(error)` accepts, end the step and rethrow it.
+
 A tool that works outside `ctx.actions`, such as a call to your test API,
 wraps its body in `ctx.budgets.runTool({ name, mutates })`, which takes an
 action slot and records the outcome. Don't call `ctx.actions` or
@@ -192,6 +196,10 @@ budget is spent, the deadline passed, or the test was cancelled. The runner
 refuses any other use, and a passed verdict with a code, with
 `MODEL_OUTPUT_INVALID`.
 
+For a model your executor drives itself, `createVerdictTool()` from
+`e2e/agent` is the built-in agent's `complete_step`. Give the model its
+`tool` and `VERDICT_RULES`, then return `verdict()`.
+
 ## Replay cache
 
 `cache` on a `StepExecutor` sets how its `act` steps use the
@@ -246,12 +254,6 @@ and leave no artifacts. The step deadline and the verdict record still
 apply.
 
 ## Next
-
-For a model your executor drives itself, `createVerdictTool()` from
-`e2e/agent` is the built-in agent's `complete_step`. Give the model its
-`tool` and `VERDICT_RULES`, then return `verdict()`. A grammar tool returns a
-`ScreenOutput`: text, or text with the screenshot. When a tool throws an
-error that `isRuntimeHardStop(error)` accepts, end the step and rethrow it.
 
 <CardGroup cols={2}>
   <Card title="agent reference" icon="wand-magic-sparkles" href="/reference/agent">

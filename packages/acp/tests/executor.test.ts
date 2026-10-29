@@ -4,8 +4,8 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentError, type ExecutorActions, type ExecutorModelCall, type StepExecutorContext } from 'e2e';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { acpExecutor } from '../src/index.ts';
-import type { AcpExecutorOptions } from '../src/types.ts';
+import { acp } from '../src/index.ts';
+import type { AcpOptions } from '../src/types.ts';
 
 const AGENT = fileURLToPath(new URL('./fixtures/scripted-agent.ts', import.meta.url));
 const cleanups: (() => void)[] = [];
@@ -14,11 +14,11 @@ afterEach(() => {
 });
 
 /** A scripted agent: one list of moves per prompt turn, and the log it writes. */
-function scripted(turns: unknown[][] | Record<string, unknown[]>, extra: Partial<AcpExecutorOptions> = {}) {
+function scripted(turns: unknown[][] | Record<string, unknown[]>, extra: Partial<AcpOptions> = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'e2e-acp-test-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const logFile = join(directory, 'agent.jsonl');
-  const executor = acpExecutor({
+  const executor = acp({
     command: process.execPath,
     args: [AGENT],
     ...extra,
@@ -88,9 +88,9 @@ function attemptOf() {
 
 const pass = { call: 'complete_step', args: { status: 'passed', summary: 'added' } };
 
-describe('acpExecutor', () => {
+describe('acp', () => {
   it('rejects a config without a command', () => {
-    expect(() => acpExecutor({} as AcpExecutorOptions)).toThrow(/takes \{ command, args \}/);
+    expect(() => acp({} as AcpOptions)).toThrow(/takes \{ command, args \}/);
   });
 
   it('acts through ctx.actions and passes on complete_step', async () => {
@@ -496,7 +496,7 @@ describe('acpExecutor', () => {
   });
 
   it('reports an agent that does not start', async () => {
-    const executor = acpExecutor({ command: join(tmpdir(), 'no-such-acp-agent') });
+    const executor = acp({ command: join(tmpdir(), 'no-such-acp-agent') });
     const step = context();
     cleanups.push(step.end);
     await expect(executor.runStep(step.ctx)).rejects.toMatchObject({ code: 'MODEL_PROVIDER_FAILED' });

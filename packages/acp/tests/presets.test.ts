@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StepExecutor, StepExecutorContext } from 'e2e';
 import { afterEach, describe, expect, it } from 'vitest';
-import { acpExecutor } from '../src/index.ts';
+import { claudeCode, codex } from '../src/index.ts';
 
 const AGENT = fileURLToPath(new URL('./fixtures/scripted-agent.ts', import.meta.url));
 const pass = { call: 'complete_step', args: { status: 'passed', summary: 'done' } };
@@ -64,17 +64,17 @@ async function runStep(executor: StepExecutor, log: string): Promise<Record<stri
 describe('agent presets', () => {
   it('refuses a preset whose adapter the project has not installed', () => {
     const directory = project();
-    expect(() => inProject(directory, () => acpExecutor.claudeCode())).toThrow(
+    expect(() => inProject(directory, () => claudeCode())).toThrow(
       expect.objectContaining({ code: 'INVALID_CONFIG', message: expect.stringContaining('npm install -D @agentclientprotocol/claude-agent-acp') }),
     );
-    expect(() => inProject(directory, () => acpExecutor.codex())).toThrow(/npm install -D @agentclientprotocol\/codex-acp/);
+    expect(() => inProject(directory, () => codex())).toThrow(/npm install -D @agentclientprotocol\/codex-acp/);
   });
 
   it("starts Claude Code's installed adapter with its own tools, settings, and saved sessions off", async () => {
     const directory = project(['@agentclientprotocol/claude-agent-acp']);
     const log = join(directory, 'agent.jsonl');
     const executor = inProject(directory, () =>
-      acpExecutor.claudeCode({ model: 'slow', env: { ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
+      claudeCode({ model: 'slow', env: { ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
     );
     expect(executor.name).toBe('claude-code');
     const entries = await runStep(executor, log);
@@ -91,11 +91,11 @@ describe('agent presets', () => {
     const directory = project(['@agentclientprotocol/codex-acp']);
     const log = join(directory, 'agent.jsonl');
     // Stands in for the Codex the adapter runs, which lists the user's MCP servers, and none when it gets a secret.
-    const codex = join(directory, 'codex');
-    writeFileSync(codex, `#!/bin/sh\n[ "$1 $2 $3" = "mcp list --json" ] && [ -z "$E2E_SECRET_KEY" ] && echo '[{"name":"playwright"},{"name":"executor"}]'\n`);
-    chmodSync(codex, 0o755);
+    const codexBin = join(directory, 'codex');
+    writeFileSync(codexBin, `#!/bin/sh\n[ "$1 $2 $3" = "mcp list --json" ] && [ -z "$E2E_SECRET_KEY" ] && echo '[{"name":"playwright"},{"name":"executor"}]'\n`);
+    chmodSync(codexBin, 0o755);
     const executor = inProject(directory, () =>
-      acpExecutor.codex({ env: { CODEX_PATH: codex, E2E_SECRET_KEY: 'sk_test_value', ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
+      codex({ env: { CODEX_PATH: codexBin, E2E_SECRET_KEY: 'sk_test_value', ACP_SCRIPT: JSON.stringify([[pass]]), ACP_LOG: log } }),
     );
     const entries = await runStep(executor, log);
     expect(entries).toContainEqual({ mode: 'read-only' });

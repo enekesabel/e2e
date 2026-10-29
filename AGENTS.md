@@ -138,7 +138,7 @@ suites that consume the built packages the way a user would.
   calls it stops asking. When every call fails, or git or a file read
   fails, it throws, and the run warns and runs every test.
 - `packages/acp` — the published `@e2e-dev/acp` package: a `StepExecutor`
-  (`acpExecutor()`, with `.claudeCode()` and `.codex()` presets) that runs
+  (`acp()`, with `claudeCode()` and `codex()` presets) that runs
   `agent.act` and `agent.assert` on a coding agent over the Agent Client
   Protocol. The step tools (`createGrammarTools`, `createVerdictTool` from
   `e2e/agent`) reach the agent as an MCP server on 127.0.0.1; permission

@@ -54,7 +54,7 @@ gates, and limits.
 
 A coding agent the user already signs in to runs agent steps over ACP:
 install `@e2e-dev/acp` and its adapter, and put
-`acpExecutor.claudeCode({ model: 'sonnet' })` or `acpExecutor.codex()` under
+`claudeCode({ model: 'sonnet' })` or `codex()` under
 `executor`; no model provider is needed. See the shipped `docs/acp.mdx` or
 [the online guide](https://e2e.tester.army/docs/acp).
 

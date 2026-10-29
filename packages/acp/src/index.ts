@@ -1,2 +1,2 @@
-export { acpExecutor } from './executor.ts';
-export type { AcpAgentOptions, AcpExecutorOptions } from './types.ts';
+export { acp, claudeCode, codex } from './executor.ts';
+export type { AcpAgentOptions, AcpOptions } from './types.ts';

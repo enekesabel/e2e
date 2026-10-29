@@ -66,13 +66,13 @@ await writeFile(
   join(directory, 'e2e.config.ts'),
   [
     'import { web } from "@e2e-dev/web";',
-    'import { acpExecutor } from "@e2e-dev/acp";',
+    `import { ${preset} } from "@e2e-dev/acp";`,
     'export default {',
     '  tests: "acp.e2e.ts",',
     '  cache: "read-write",',
     `  targets: [{ engine: web(), app: { url: ${JSON.stringify(appUrl)} } }],`,
     `  credentials: { admin: { username: "Ada", password: ${JSON.stringify(password)} } },`,
-    `  agents: { default: { executor: acpExecutor.${preset}(${JSON.stringify(model === '' ? {} : { model })}) } },`,
+    `  agents: { default: { executor: ${preset}(${JSON.stringify(model === '' ? {} : { model })}) } },`,
     '};',
   ].join('\n'),
 );
